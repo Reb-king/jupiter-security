@@ -29,6 +29,7 @@ router.post('/login', async (req, res) => {
     }
 
     const match = await bcrypt.compare(password, user.password_hash);
+    console.log('[LOGIN DEBUG] Password verification passed:', match);
     if (!match) {
       return res.status(401).json({ success: false, message: 'Invalid employee code or password.' });
     }
@@ -69,6 +70,8 @@ router.get('/me', authenticate, async (req, res) => {
       'SELECT id, employee_code, full_name, phone, email, role, hourly_rate, is_active FROM users WHERE id = ?',
       [req.user.id]
     );
+    console.log('[LOGIN DEBUG] Employee code received:', JSON.stringify(employee_code));
+console.log('[LOGIN DEBUG] Matching users found:', rows.length);
     if (rows.length === 0) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
