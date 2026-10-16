@@ -10,7 +10,10 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  timezone: '+02:00'   // Namibia (CAT - Central Africa Time)
+  timezone: '+02:00',
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 module.exports = pool;
