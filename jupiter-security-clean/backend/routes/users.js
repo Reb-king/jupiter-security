@@ -269,10 +269,12 @@ router.post('/:id/reset-password', authenticate, authorize('admin', 'manager'), 
     }
 
     // Check the guard exists
-    const [guardRows] = await pool.query(
-      'SELECT id, full_name, is_active FROM users WHERE id = ? AND role = "guard"',
-      [req.params.id]
-    );
+   
+const [guardRows] = await pool.query(
+  'SELECT id, full_name, is_active FROM users WHERE id = ? AND role = ?',
+  [req.params.id, 'guard']
+);
+
 
     if (guardRows.length === 0) {
       return res.status(404).json({ success: false, message: 'Guard not found.' });
@@ -282,10 +284,12 @@ router.post('/:id/reset-password', authenticate, authorize('admin', 'manager'), 
     const tempPassword = 'Temp' + Math.floor(1000 + Math.random() * 9000); // example: Temp4821
     const hash = await bcrypt.hash(tempPassword, 10);
 
-    const [result] = await pool.query(
-      'UPDATE users SET password_hash = ? WHERE id = ? AND role = "guard"',
-      [hash, req.params.id]
-    );
+    
+const [result] = await pool.query(
+  'UPDATE users SET password_hash = ? WHERE id = ? AND role = ?',
+  [hash, req.params.id, 'guard']
+);
+
 
     if (result.affectedRows === 0) {
       return res.status(500).json({ success: false, message: 'Failed to update password.' });
