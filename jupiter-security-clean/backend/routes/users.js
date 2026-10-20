@@ -26,8 +26,21 @@ router.get('/', authenticate, authorize('admin', 'manager'), async (req, res) =>
     }
 
     sql += ' ORDER BY full_name';
+    
     const [rows] = await pool.query(sql, params);
-    res.json({ success: true, data: rows });
+
+const formattedRows = rows.map(user => ({
+  ...user,
+  date_of_birth: user.date_of_birth
+    ? String(user.date_of_birth).slice(0, 10)
+    : null,
+  hired_at: user.hired_at
+    ? String(user.hired_at).slice(0, 10)
+    : null
+}));
+
+res.json({ success: true, data: formattedRows });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Failed to fetch users.' });
