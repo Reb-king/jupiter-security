@@ -180,7 +180,8 @@ async function renderGuards(el) {
                     <button class="btn-danger" style="margin:2px" onclick="fireGuard(${u.id}, '${u.full_name}')">Fire</button>
                   `}
                 <button class="btn" style="background:#3b82f6;color:white;margin:2px" onclick="resetPassword(${u.id}, '${u.full_name}')">Show/Reset Password</button>
-              </td>
+                <button class="btn" style="background:#0d9488;color:white;margin:2px" onclick="editGuard(${u.id})">Edit</button>
+                </td>
             </tr>
           `).join('')}
         </tbody>
@@ -210,6 +211,86 @@ async function renderGuards(el) {
     }
   };
 }
+
+window.editGuard = async (id) => {
+  try {
+    // Get the guard's current details.
+    const res = await api(`/users/${id}`);
+    const guard = res.data;
+
+    if (!guard) {
+      alert('Guard details could not be found.');
+      return;
+    }
+
+    const full_name = prompt('Full Name:', guard.full_name || '');
+    if (full_name === null) return;
+
+    if (!full_name.trim()) {
+      alert('Full name cannot be empty.');
+      return;
+    }
+
+    const phone = prompt('Phone:', guard.phone || '');
+    if (phone === null) return;
+
+    const email = prompt('Email:', guard.email || '');
+    if (email === null) return;
+
+    const hourly_rate = prompt(
+      'Hourly Rate (NAD):',
+      guard.hourly_rate ?? '0.00'
+    );
+    if (hourly_rate === null) return;
+
+    if (hourly_rate.trim() === '' || !Number.isFinite(Number(hourly_rate)) || Number(hourly_rate) < 0) {
+      alert('Please enter a valid, non-negative hourly rate.');
+      return;
+    }
+
+    const date_of_birth = prompt(
+      'Date of Birth (YYYY-MM-DD, leave blank to clear):',
+      guard.date_of_birth ? String(guard.date_of_birth).slice(0, 10) : ''
+    );
+    if (date_of_birth === null) return;
+
+    const hired_at = prompt(
+      'Date Hired (YYYY-MM-DD, leave blank to clear):',
+      guard.hired_at ? String(guard.hired_at).slice(0, 10) : ''
+    );
+    if (hired_at === null) return;
+
+    const validDate = value =>
+      value === '' || /^\d{4}-\d{2}-\d{2}$/.test(value);
+
+    if (!validDate(date_of_birth) || !validDate(hired_at)) {
+      alert('Please enter dates in YYYY-MM-DD format, or leave them blank.');
+      return;
+    }
+
+    if (!confirm(`Save the updated details for ${full_name.trim()}?`)) {
+      return;
+    }
+
+    const update = await api(`/users/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        full_name: full_name.trim(),
+        phone: phone.trim(),
+        email: email.trim(),
+        hourly_rate: Number(hourly_rate),
+        date_of_birth: date_of_birth || null,
+        hired_at: hired_at || null
+      })
+    });
+
+    alert(update.message || 'Guard details updated successfully.');
+    loadPage('guards');
+  } catch (err) {
+    alert(err.message || 'Failed to update guard details.');
+  }
+};
+
 
 // ========== Guard Actions ==========
 

@@ -119,38 +119,99 @@ router.post('/', authenticate, authorize('admin', 'manager'), async (req, res) =
   }
 });
 
-// PUT update user
+ // PUT update guard details
 router.put('/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
   try {
-    const { full_name, phone, email, hourly_rate, password, date_of_birth, hired_at } = req.body;
+    const { full_name, phone, email, hourly_rate, date_of_birth, hired_at } = req.body;
+
+    // Confirm that this user exists and is a guard.
+    const [guards] = await pool.query(
+      'SELECT id FROM users WHERE id = ? AND role = ?',
+      [req.params.id, 'guard']
+    );
+
+    if (guards.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Guard not found.'
+      });
+    }
+
     const updates = [];
     const params = [];
 
-    if (full_name !== undefined) { updates.push('full_name = ?'); params.push(full_name); }
-    if (phone !== undefined) { updates.push('phone = ?'); params.push(phone); }
-    if (email !== undefined) { updates.push('email = ?'); params.push(email); }
-    if (hourly_rate !== undefined) { updates.push('hourly_rate = ?'); params.push(hourly_rate); }
-    if (date_of_birth !== undefined) { updates.push('date_of_birth = ?'); params.push(date_of_birth); }
-    if (hired_at !== undefined) { updates.push('hired_at = ?'); params.push(hired_at); }
-    if (password) {
-      const hash = await bcrypt.hash(password, 10);
-      updates.push('password_hash = ?');
-      params.push(hash);
+    if (full_name !== undefined) {
+      updates.push('full_name = ?');
+      params.push(full_name);
+    }
+
+    if (phone !== undefined) {
+      updates.push('phone = ?');
+      params.push(phone || null);
+    }
+
+    if (email !== undefined) {
+      updates.push('email = ?');
+      params.push(email || null);
+    }
+
+    if (hourly_rate !== undefined) {
+      updates.push('hourly_rate = ?');
+      params.push(hourly_rate);
+    }
+
+    if (date_of_birth !== undefined) {
+      updates.push('date_of_birth = ?');
+      params.push(date_of_birth || null);
+    }
+
+    if (hired_at !== undefined) {
+      updates.push('hired_at = ?');
+      params.push(hired_at || null);
     }
 
     if (updates.length === 0) {
-      return res.status(400).json({ success: false, message: 'No fields to update.' });
+      return res.status(400).json({
+        success: false,
+        message: 'No fields to update.'
+      });
     }
 
     params.push(req.params.id);
-    await pool.query(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, params);
 
-    res.json({ success: true, message: 'User updated successfully.' });
+    const [result] = await pool.query(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = ? AND role = 'guard'`,
+      params
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No guard details were changed.'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Guard details updated successfully.'
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: 'Failed to update user.' });
+
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        success: false,
+        message: 'That email address is already in use.'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update guard details.'
+    });
   }
 });
+
 
 // ========== STATUS ACTIONS ==========
 
