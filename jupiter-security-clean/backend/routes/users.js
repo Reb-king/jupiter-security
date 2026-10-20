@@ -172,10 +172,12 @@ router.put('/:id/suspend', authenticate, authorize('admin', 'manager'), async (r
       return res.status(400).json({ success: false, message: 'You cannot suspend yourself.' });
     }
 
-    await pool.query(
-      'UPDATE users SET is_active = 0, suspended_at = NOW() WHERE id = ? AND role = "guard"',
-      [req.params.id]
-    );
+    
+await pool.query(
+  'UPDATE users SET is_active = 0, suspended_at = NOW() WHERE id = ? AND role = ?',
+  [req.params.id, 'guard']
+);
+
 
     // Remove current site assignment
     await pool.query(
@@ -206,8 +208,8 @@ router.put('/:id/reinstate', authenticate, authorize('admin', 'manager'), async 
     }
 
     await pool.query(
-      'UPDATE users SET is_active = 1, suspended_at = NULL WHERE id = ? AND role = "guard"',
-      [req.params.id]
+      'UPDATE users SET is_active = 1, suspended_at = NULL WHERE id = ? AND role = ?',
+[req.params.id, 'guard']
     );
 
     res.json({ success: true, message: 'Guard has been reinstated and is now Active.' });
@@ -235,7 +237,10 @@ router.delete('/:id/fire', authenticate, authorize('admin', 'manager'), async (r
       return res.status(400).json({ success: false, message: 'You cannot fire yourself.' });
     }
 
-    await pool.query('DELETE FROM users WHERE id = ? AND role = "guard"', [req.params.id]);
+   await pool.query(
+  'DELETE FROM users WHERE id = ? AND role = ?',
+  [req.params.id, 'guard']
+);
 
     res.json({ success: true, message: 'Guard has been permanently fired and removed from the system.' });
   } catch (err) {
