@@ -163,7 +163,9 @@ router.post('/', authenticate, authorize('admin', 'manager'), async (req, res) =
       ]
     );
 
-   let emailSent = false;
+   
+
+let emailSent = false;
 
 try {
   await mailer.sendMail({
@@ -190,6 +192,8 @@ try {
 } catch (mailError) {
   console.error('Registration email failed:', mailError.message);
 }
+
+
 
 return res.status(201).json({
   success: true,
@@ -506,48 +510,51 @@ router.post('/:id/reset-password', authenticate, authorize('admin', 'manager'), 
       });
     }
 
-    passwordUpdated = true;
+   
+passwordUpdated = true;
 
-    try {
-      await mailer.sendMail({
-        from: process.env.MAIL_FROM || process.env.SMTP_USER,
-        to: guard.email.trim(),
-        subject: 'Your Jupiter Security Password Has Been Reset',
-        text: [
-          `Hello ${guard.full_name},`,
-          '',
-          'A manager has reset your Jupiter Security Management System password.',
-          '',
-          `Employee account: ${guard.id}`,
-          `Temporary password: ${tempPassword}`,
-          '',
-          'Please sign in and change this temporary password as soon as possible.',
-          'If you did not expect this change, contact your management team.',
-          '',
-          'Jupiter Security Management System'
-        ].join('\n')
-      });
-        } catch (mailError) {
-      // Restore the previous password if email delivery fails.
-      try {
-        const [rollbackResult] = await pool.query(
-          `UPDATE users
-           SET password_hash = ?
-           WHERE id = ? AND role = 'guard' AND password_hash = ?`,
-          [previousHash, guardId, newHash]
-        );
 
-        if (rollbackResult.affectedRows > 0) {
-          passwordUpdated = false;
-        } else {
-          console.error('Password rollback could not be confirmed.');
-        }
-      } catch (rollbackError) {
-        console.error('Password rollback failed:', rollbackError.message);
-      }
+try {
+  await mailer.sendMail({
+    from: process.env.MAIL_FROM || process.env.SMTP_USER,
+    to: guard.email.trim(),
+    subject: 'Your Jupiter Security Password Has Been Reset',
+    text: [
+      `Hello ${guard.full_name},`,
+      '',
+      'A manager has reset your Jupiter Security Management System password.',
+      '',
+      `Employee account: ${guard.id}`,
+      `Temporary password: ${tempPassword}`,
+      '',
+      'Please sign in and change this temporary password as soon as possible.',
+      'If you did not expect this change, contact your management team.',
+      '',
+      'Jupiter Security Management System'
+    ].join('\n')
+  });
+} catch (mailError) {
+  // Restore the previous password if email delivery fails.
+  try {
+    const [rollbackResult] = await pool.query(
+      `UPDATE users
+       SET password_hash = ?
+       WHERE id = ? AND role = 'guard' AND password_hash = ?`,
+      [previousHash, guardId, newHash]
+    );
 
-      throw mailError;
+    if (rollbackResult.affectedRows > 0) {
+      passwordUpdated = false;
+    } else {
+      console.error('Password rollback could not be confirmed.');
     }
+  } catch (rollbackError) {
+    console.error('Password rollback failed:', rollbackError.message);
+  }
+
+  throw mailError;
+}
+
     return res.json({
       success: true,
       message: `A temporary password has been emailed to ${guard.email.trim()}.`,
