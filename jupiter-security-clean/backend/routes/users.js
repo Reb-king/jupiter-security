@@ -1,7 +1,20 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
+const crypto = require('crypto');
 const { authenticate, authorize } = require('../middleware/auth');
+
+const nodemailer = require('nodemailer');
+
+const mailer = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: Number(process.env.SMTP_PORT || 465),
+  secure: process.env.SMTP_SECURE === 'true',
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: (process.env.SMTP_PASS || '').replace(/\s/g, '')
+  }
+});
 
 const router = express.Router();
 
@@ -69,55 +82,147 @@ router.get('/:id', authenticate, async (req, res) => {
   }
 });
 
-// POST register new guard
+
+/* POST register new guard */
 router.post('/', authenticate, authorize('admin', 'manager'), async (req, res) => {
   try {
-    const { employee_code, full_name, phone, email, password, role, hourly_rate, date_of_birth, hired_at } = req.body;
+    const {
+      full_name,
+      phone,
+      email,
+      role,
+      hourly_rate,
+      date_of_birth,
+      hired_at
+    } = req.body;
 
-    if (!employee_code || !full_name || !password) {
-      return res.status(400).json({ success: false, message: 'employee_code, full_name and password are required.' });
+    if (!full_name || !full_name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Full name is required.'
+      });
+    }
+
+    if (!email || !email.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email address is required.'
+      });
     }
 
     const allowedRoles = ['guard', 'manager'];
-    const userRole = role && allowedRoles.includes(role) ? role : 'guard';
-    const hash = await bcrypt.hash(password, 10);
+    const userRole =
+      role && allowedRoles.includes(role) ? role : 'guard';
+
+    // Find the highest existing automatically generated username.
+    const [existingUsers] = await pool.query(
+      `SELECT employee_code
+       FROM users
+       WHERE employee_code REGEXP '^JUP-[0-9]+$'`
+    );
+
+    let highestNumber = 0;
+
+    for (const user of existingUsers) {
+      const match = user.employee_code.match(/^JUP-(\d+)$/);
+
+      if (match) {
+        highestNumber = Math.max(
+          highestNumber,
+          Number(match[1])
+        );
+      }
+    }
+
+    // Generate the next username without changing existing accounts.
+    const nextNumber = highestNumber + 1;
+    const employee_code =
+      `JUP-${String(nextNumber).padStart(3, '0')}`;
+
+    // Generate a temporary password.
+    const tempPassword =
+      'Temp-' + crypto.randomBytes(6).toString('hex');
+
+    const hash = await bcrypt.hash(tempPassword, 10);
 
     const [result] = await pool.query(
-      `INSERT INTO users 
-        (employee_code, full_name, phone, email, password_hash, role, hourly_rate, is_active, date_of_birth, hired_at)
+      `INSERT INTO users
+        (employee_code, full_name, phone, email, password_hash,
+         role, hourly_rate, is_active, date_of_birth, hired_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       [
-        employee_code, 
-        full_name, 
-        phone || null, 
-        email || null, 
-        hash, 
-        userRole, 
+        employee_code,
+        full_name.trim(),
+        phone || null,
+        email.trim(),
+        hash,
+        userRole,
         hourly_rate || 0,
         date_of_birth || null,
         hired_at || new Date().toISOString().slice(0, 10)
       ]
     );
 
-    res.status(201).json({
-      success: true,
-      message: 'User registered successfully.',
-      data: { 
-        id: result.insertId, 
-        employee_code, 
-        full_name, 
-        role: userRole,
-        temp_password: password   // return it once so you can see it
-      }
-    });
-  } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ success: false, message: 'Employee code or email already exists.' });
-    }
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Failed to register user.' });
+   let emailSent = false;
+
+try {
+  await mailer.sendMail({
+    from: process.env.MAIL_FROM || process.env.SMTP_USER,
+    to: email.trim(),
+    subject: 'Your Jupiter Security Management System Login Details',
+    text: [
+      `Hello ${full_name.trim()},`,
+      '',
+      'Your Jupiter Security Management System account has been created.',
+      '',
+      `Employee Code: ${employee_code}`,
+      `Temporary Password: ${tempPassword}`,
+      '',
+      'Please log in and change your temporary password as soon as possible.',
+      'Keep these login details private.',
+      '',
+      'Regards,',
+      'Jupiter Security Management System'
+    ].join('\n')
+  });
+
+  emailSent = true;
+} catch (mailError) {
+  console.error('Registration email failed:', mailError.message);
+}
+
+return res.status(201).json({
+  success: true,
+  message: emailSent
+    ? 'User registered and login details emailed successfully.'
+    : 'User created, but the email could not be sent.',
+  data: {
+    id: result.insertId,
+    employee_code,
+    full_name: full_name.trim(),
+    email: email.trim(),
+    role: userRole,
+    email_sent: emailSent,
+    ...(!emailSent ? { temp_password: tempPassword } : {})
   }
 });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        success: false,
+        message:
+          'This username or email already exists. Please try again.'
+      });
+    }
+
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to register user.'
+    });
+  }
+});
+
 
  // PUT update guard details
 router.put('/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
@@ -310,62 +415,243 @@ router.delete('/:id/fire', authenticate, authorize('admin', 'manager'), async (r
   }
 });
 
-// Reset & Show Temporary Password
+/**
+ * Reset a guard's password and email the temporary password.
+ * The previous password is restored if email delivery fails.
+ */
 router.post('/:id/reset-password', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  let guardId;
+  let previousHash;
+  let newHash;
+  let passwordUpdated = false;
+
   try {
-    const { password } = req.body; // admin password
+    const { password } = req.body;
+
     if (!password) {
-      return res.status(400).json({ success: false, message: 'Your password is required.' });
+      return res.status(400).json({
+        success: false,
+        message: 'Your password is required.'
+      });
     }
 
-    // Verify admin password
-    const [adminRows] = await pool.query('SELECT password_hash FROM users WHERE id = ?', [req.user.id]);
+    // Verify the manager's current password.
+    const [adminRows] = await pool.query(
+      'SELECT password_hash FROM users WHERE id = ?',
+      [req.user.id]
+    );
+
     if (adminRows.length === 0) {
-      return res.status(401).json({ success: false, message: 'Admin not found.' });
+      return res.status(401).json({
+        success: false,
+        message: 'Management account not found.'
+      });
     }
 
-    const match = await bcrypt.compare(password, adminRows[0].password_hash);
+    const match = await bcrypt.compare(
+      password,
+      adminRows[0].password_hash
+    );
+
     if (!match) {
-      return res.status(401).json({ success: false, message: 'Incorrect password.' });
+      return res.status(401).json({
+        success: false,
+        message: 'Incorrect password.'
+      });
     }
 
-    // Check the guard exists
-   
-const [guardRows] = await pool.query(
-  'SELECT id, full_name, is_active FROM users WHERE id = ? AND role = ?',
-  [req.params.id, 'guard']
-);
-
+    // Get the guard's registered email and existing password hash.
+    const [guardRows] = await pool.query(
+      `SELECT id, full_name, email, is_active, password_hash
+       FROM users
+       WHERE id = ? AND role = 'guard'`,
+      [req.params.id]
+    );
 
     if (guardRows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Guard not found.' });
+      return res.status(404).json({
+        success: false,
+        message: 'Guard not found.'
+      });
     }
 
-    // Generate a simple temporary password
-    const tempPassword = 'Temp' + Math.floor(1000 + Math.random() * 9000); // example: Temp4821
-    const hash = await bcrypt.hash(tempPassword, 10);
+    const guard = guardRows[0];
 
-    
-const [result] = await pool.query(
-  'UPDATE users SET password_hash = ? WHERE id = ? AND role = ?',
-  [hash, req.params.id, 'guard']
-);
+    if (!guard.email || !guard.email.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'This guard has no registered email address. Update their email before resetting the password.'
+      });
+    }
 
+    guardId = guard.id;
+    previousHash = guard.password_hash;
+
+    // Generate a cryptographically secure temporary password.
+    const tempPassword = `Jup-${crypto.randomBytes(12).toString('base64url')}`;
+    newHash = await bcrypt.hash(tempPassword, 10);
+
+    // Change the password, then send the email.
+    const [result] = await pool.query(
+      `UPDATE users
+       SET password_hash = ?
+       WHERE id = ? AND role = 'guard'`,
+      [newHash, guardId]
+    );
 
     if (result.affectedRows === 0) {
-      return res.status(500).json({ success: false, message: 'Failed to update password.' });
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update the guard password.'
+      });
     }
 
-    res.json({
+    passwordUpdated = true;
+
+    try {
+      await mailer.sendMail({
+        from: process.env.MAIL_FROM || process.env.SMTP_USER,
+        to: guard.email.trim(),
+        subject: 'Your Jupiter Security Password Has Been Reset',
+        text: [
+          `Hello ${guard.full_name},`,
+          '',
+          'A manager has reset your Jupiter Security Management System password.',
+          '',
+          `Employee account: ${guard.id}`,
+          `Temporary password: ${tempPassword}`,
+          '',
+          'Please sign in and change this temporary password as soon as possible.',
+          'If you did not expect this change, contact your management team.',
+          '',
+          'Jupiter Security Management System'
+        ].join('\n')
+      });
+        } catch (mailError) {
+      // Restore the previous password if email delivery fails.
+      try {
+        const [rollbackResult] = await pool.query(
+          `UPDATE users
+           SET password_hash = ?
+           WHERE id = ? AND role = 'guard' AND password_hash = ?`,
+          [previousHash, guardId, newHash]
+        );
+
+        if (rollbackResult.affectedRows > 0) {
+          passwordUpdated = false;
+        } else {
+          console.error('Password rollback could not be confirmed.');
+        }
+      } catch (rollbackError) {
+        console.error('Password rollback failed:', rollbackError.message);
+      }
+
+      throw mailError;
+    }
+    return res.json({
       success: true,
-      message: 'Temporary password has been reset successfully.',
-      temp_password: tempPassword,
-      guard_name: guardRows[0].full_name,
-      is_active: guardRows[0].is_active
+      message: `A temporary password has been emailed to ${guard.email.trim()}.`,
+      guard_name: guard.full_name,
+      is_active: guard.is_active
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Failed to reset password.' });
+    console.error('Password reset failed:', err.message);
+
+    return res.status(500).json({
+      success: false,
+      message: passwordUpdated
+        ? 'Email delivery failed, and the previous password could not be confirmed as restored. Contact the system administrator before retrying.'
+        : 'The password reset could not be completed. Check email delivery and try again.'
+    });
   }
 });
+
+
+/**
+ * Allow an authenticated guard to change their own password.
+ */
+router.post('/change-password', authenticate, authorize('guard'), async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Enter your current password and your new password.'
+      });
+    }
+
+    if (typeof newPassword !== 'string' || newPassword.length < 4) {
+      return res.status(400).json({
+        success: false,
+        message: 'Your new password must be at least 4 characters long.'
+      });
+    }
+
+    if (newPassword.length > 128) {
+      return res.status(400).json({
+        success: false,
+        message: 'Your new password must not exceed 128 characters.'
+      });
+    }
+
+    const [rows] = await pool.query(
+      'SELECT password_hash FROM users WHERE id = ? AND role = ?',
+      [req.user.id, 'guard']
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Guard account not found.'
+      });
+    }
+
+    const matches = await bcrypt.compare(
+      currentPassword,
+      rows[0].password_hash
+    );
+
+    if (!matches) {
+      return res.status(401).json({
+        success: false,
+        message: 'Your current password is incorrect.'
+      });
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Your new password must be different from your current password.'
+      });
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 10);
+
+    const [result] = await pool.query(
+      'UPDATE users SET password_hash = ? WHERE id = ? AND role = ?',
+      [newHash, req.user.id, 'guard']
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(500).json({
+        success: false,
+        message: 'Your password could not be changed. Please try again.'
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Your password has been changed successfully.'
+    });
+  } catch (err) {
+    console.error('Guard password change failed:', err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to change your password right now.'
+    });
+  }
+});
+
+
 module.exports = router;

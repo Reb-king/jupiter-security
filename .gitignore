@@ -1,0 +1,10 @@
+# Environment files and secrets
+.env
+.env.*
+
+# Node.js dependencies
+node_modules/
+
+# Local backup files
+*.backup*
+*.bak

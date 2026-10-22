@@ -20,27 +20,35 @@ function formatNAD(n) {
   return 'N$ ' + Number(n).toLocaleString('en-NA', { minimumFractionDigits: 2 });
 }
 
-// ---------- Auth ----------
+
+ // ---------- Auth ----------
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const code = document.getElementById('login-code').value.trim();
+
+  const username = document.getElementById('login-code').value.trim();
   const password = document.getElementById('login-password').value;
   const errEl = document.getElementById('login-error');
+
   errEl.textContent = '';
+
   try {
     const data = await api('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ employee_code: code, password })
+      body: JSON.stringify({ username, password })
     });
+
     token = data.token;
     currentUser = data.user;
+
     localStorage.setItem('jupiter_token', token);
     localStorage.setItem('jupiter_user', JSON.stringify(currentUser));
+
     enterApp();
   } catch (err) {
     errEl.textContent = err.message;
   }
 });
+
 
 document.getElementById('btn-logout').addEventListener('click', () => {
   token = null;
@@ -91,6 +99,7 @@ async function loadPage(page) {
       case 'location': await renderLocation(content); break;
       case 'payroll': await renderPayroll(content); break;
       case 'clock': await renderClock(content); break;
+      case 'password': await renderChangePassword(content); break;
       default: content.innerHTML = '<p>Page not found</p>';
     }
   } catch (err) {
@@ -99,6 +108,94 @@ async function loadPage(page) {
 }
 
 // ---------- Pages ----------
+
+async function renderChangePassword(el) {
+  if (!currentUser || currentUser.role !== 'guard') {
+    el.innerHTML = '<p class="error">Access denied.</p>';
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="card">
+      <h2>Change Password</h2>
+      <p>Choose a new password of at least 4 characters.</p>
+
+      <form id="change-password-form">
+        <label for="current-password">Current Password</label>
+        <input
+          type="password"
+          id="current-password"
+          autocomplete="current-password"
+          required
+        />
+
+        <label for="new-password">New Password</label>
+        <input
+          type="password"
+          id="new-password"
+          autocomplete="new-password"
+          minlength="4"
+          maxlength="128"
+          required
+        />
+
+        <label for="confirm-password">Confirm New Password</label>
+        <input
+          type="password"
+          id="confirm-password"
+          autocomplete="new-password"
+          minlength="4"
+          maxlength="128"
+          required
+        />
+
+        <p id="change-password-message" role="status"></p>
+
+        <button type="submit" id="change-password-submit">
+          Change Password
+        </button>
+      </form>
+    </div>
+  `;
+
+  const form = document.getElementById('change-password-form');
+  const message = document.getElementById('change-password-message');
+  const submit = document.getElementById('change-password-submit');
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    message.textContent = '';
+
+    const currentPassword =
+      document.getElementById('current-password').value;
+    const newPassword =
+      document.getElementById('new-password').value;
+    const confirmPassword =
+      document.getElementById('confirm-password').value;
+
+    if (newPassword !== confirmPassword) {
+      message.textContent = 'The new passwords do not match.';
+      return;
+    }
+
+    submit.disabled = true;
+
+    try {
+      const result = await api('/users/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword })
+      });
+
+      message.textContent = result.message;
+      form.reset();
+    } catch (err) {
+      message.textContent = err.message;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+}
+
 async function renderDashboard(el) {
   el.innerHTML = `
     <h2 style="margin-bottom:1rem">Dashboard</h2>
@@ -127,21 +224,22 @@ async function renderDashboard(el) {
 
 async function renderGuards(el) {
   const data = await api('/users?role=guard');
-  
+
   el.innerHTML = `
     <div class="card">
       <h2>Security Guards</h2>
-      
-      <div class="form-row" style="flex-wrap: wrap; gap: 8px;">
-        <input id="g-code" placeholder="Employee Code (JUP-SEC-001)" />
-        <input id="g-name" placeholder="Full Name" />
-        <input id="g-phone" placeholder="Phone (+264...)" />
-        <input id="g-dob" type="date" title="Date of Birth" />
-        <input id="g-hired" type="date" title="Date Hired" />
-        <input id="g-rate" type="number" step="0.01" placeholder="Hourly Rate (NAD)" />
-        <input id="g-pass" type="password" placeholder="Temp Password" />
-        <button class="btn" id="btn-add-guard">Register Guard</button>
-      </div>
+
+
+<div class="form-row" style="flex-wrap: wrap; gap: 8px;">
+  <input id="g-name" placeholder="Full Name" />
+  <input id="g-phone" placeholder="Phone (+264...)" />
+  <input id="g-email" type="email" placeholder="Email Address" required />
+  <input id="g-dob" type="date" title="Date of Birth" />
+  <input id="g-hired" type="date" title="Date Hired" />
+  <input id="g-rate" type="number" step="0.01" placeholder="Hourly Rate (NAD)" />
+  <button class="btn" id="btn-add-guard">Register Guard</button>
+</div>
+
 
       <table>
         <thead>
@@ -149,6 +247,7 @@ async function renderGuards(el) {
             <th>Code</th>
             <th>Name</th>
             <th>Phone</th>
+            <th>Email</th>
             <th>DOB</th>
             <th>Hired</th>
             <th>Rate</th>
@@ -163,23 +262,24 @@ async function renderGuards(el) {
               <td>${u.employee_code}</td>
               <td>${u.full_name}</td>
               <td>${u.phone || '-'}</td>
+              <td>${u.email || '-'}</td>
               <td>${u.date_of_birth ? u.date_of_birth.slice(0,10) : '-'}</td>
               <td>${u.hired_at ? u.hired_at.slice(0,10) : '-'}</td>
               <td>${formatNAD(u.hourly_rate)}</td>
               <td>
-                ${u.is_active 
-                  ? '<span class="status-on">Active</span>' 
+                ${u.is_active
+                  ? '<span class="status-on">Active</span>'
                   : '<span class="status-off">On Access</span>'}
               </td>
               <td>${!u.is_active && u.suspended_at ? u.suspended_at.slice(0,10) : '-'}</td>
               <td style="white-space: nowrap;">
-                ${u.is_active 
+                ${u.is_active
                   ? `<button class="btn" style="background:#f59e0b;color:#000;margin:2px" onclick="suspendGuard(${u.id}, '${u.full_name}')">Put on Access</button>`
                   : `
                     <button class="btn-success" style="margin:2px" onclick="reinstateGuard(${u.id}, '${u.full_name}')">Reinstate</button>
                     <button class="btn-danger" style="margin:2px" onclick="fireGuard(${u.id}, '${u.full_name}')">Fire</button>
                   `}
-                <button class="btn" style="background:#3b82f6;color:white;margin:2px" onclick="resetPassword(${u.id}, '${u.full_name}')">Show/Reset Password</button>
+                <button class="btn" style="background:#3b82f6;color:white;margin:2px" onclick="resetPassword(${u.id}, '${u.full_name}')">Reset Password</button>
                 <button class="btn" style="background:#0d9488;color:white;margin:2px" onclick="editGuard(${u.id})">Edit</button>
                 </td>
             </tr>
@@ -189,27 +289,45 @@ async function renderGuards(el) {
     </div>
   `;
 
-  document.getElementById('btn-add-guard').onclick = async () => {
-    try {
-      const res = await api('/users', {
-        method: 'POST',
-        body: JSON.stringify({
-          employee_code: document.getElementById('g-code').value,
-          full_name: document.getElementById('g-name').value,
-          phone: document.getElementById('g-phone').value,
-          date_of_birth: document.getElementById('g-dob').value || null,
-          hired_at: document.getElementById('g-hired').value || null,
-          hourly_rate: document.getElementById('g-rate').value,
-          password: document.getElementById('g-pass').value,
-          role: 'guard'
-        })
-      });
-      alert(`Guard registered successfully!\n\nTemporary Password: ${res.data.temp_password}`);
-      loadPage('guards');
-    } catch (err) { 
-      alert(err.message); 
-    }
-  };
+
+document.getElementById('btn-add-guard').onclick = async () => {
+  try {
+    const res = await api('/users', {
+      method: 'POST',
+      body: JSON.stringify({
+        full_name: document.getElementById('g-name').value.trim(),
+        phone: document.getElementById('g-phone').value.trim(),
+        email: document.getElementById('g-email').value.trim(),
+        date_of_birth: document.getElementById('g-dob').value || null,
+        hired_at: document.getElementById('g-hired').value || null,
+        hourly_rate: document.getElementById('g-rate').value || 0,
+        role: 'guard'
+      })
+    });
+
+    if (res.data.email_sent) {
+  alert(
+    `Guard registered successfully!\n\n` +
+    `Employee Code: ${res.data.employee_code}\n` +
+    `Login details emailed to: ${res.data.email}\n\n` +
+    `The guard should check their inbox and spam folder.`
+  );
+} else {
+  alert(
+    `Guard account created, but the email could not be sent.\n\n` +
+    `Employee Code: ${res.data.employee_code}\n` +
+    `Email address: ${res.data.email}\n` +
+    `Temporary Password: ${res.data.temp_password}\n\n` +
+    `Please provide these login details securely to the guard.`
+  );
+}
+
+    loadPage('guards');
+  } catch (err) {
+    alert(err.message);
+  }
+};
+
 }
 
 window.editGuard = async (id) => {
@@ -344,8 +462,12 @@ window.fireGuard = async (id, name) => {
   }
 };
 
+
 window.resetPassword = async (id, name) => {
-  const password = prompt(`Reset temporary password for "${name}"?\n\nEnter your admin password to continue:`);
+  const password = prompt(
+    `Reset the temporary password for "${name}"?\n\nEnter your management password to continue:`
+  );
+
   if (!password) return;
 
   try {
@@ -354,12 +476,11 @@ window.resetPassword = async (id, name) => {
       body: JSON.stringify({ password })
     });
 
-    let message = `New Temporary Password for ${res.guard_name}:\n\n${res.temp_password}\n\n`;
+    let message = res.message;
 
     if (!res.is_active) {
-      message += `WARNING: This guard is currently ON ACCESS (suspended).\nThey will NOT be able to log in until you Reinstate them.`;
-    } else {
-      message += `The guard can now log in with this password.`;
+      message +=
+        '\n\nWARNING: This guard is currently suspended and cannot log in until reinstated.';
     }
 
     alert(message);
@@ -367,6 +488,7 @@ window.resetPassword = async (id, name) => {
     alert(err.message);
   }
 };
+
 
 async function renderSites(el) {
   const data = await api('/sites');
