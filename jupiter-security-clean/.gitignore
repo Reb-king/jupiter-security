@@ -12,3 +12,11 @@ pnpm-debug.log*
 # Local backup copies
 *.backup*
 *.bak
+
+# Private incident report attachments
+/backend/uploads/incidents/
+
+# Timestamped local backup files
+*.bak*
+*.before-step*
+*-backup*

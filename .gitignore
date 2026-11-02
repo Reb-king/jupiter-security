@@ -8,3 +8,9 @@ node_modules/
 # Local backup files
 *.backup*
 *.bak
+# Additional JSMS security and backup protection
+*.bak*
+*.before-step*
+*-backup*/
+*-backup*.sql
+/jupiter-security-clean/backend/uploads/incidents/

@@ -1,112 +1,621 @@
+
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 
-// GET all sites
+// Require the authenticated user's current password for sensitive site actions.
+async function requireCurrentPassword(req, res) {
+  const password = req.body && req.body.password;
+
+  if (typeof password !== 'string' || password.length === 0) {
+    res.status(400).json({
+      success: false,
+      message: 'Your current password is required to perform this action.'
+    });
+    return false;
+  }
+
+  const [rows] = await pool.query(
+    'SELECT password_hash FROM users WHERE id = ?',
+    [req.user.id]
+  );
+
+  if (!rows.length || !rows[0].password_hash) {
+    res.status(401).json({
+      success: false,
+      message: 'Could not verify your account password.'
+    });
+    return false;
+  }
+
+  const matches = await bcrypt.compare(password, rows[0].password_hash);
+
+  if (!matches) {
+    res.status(401).json({
+      success: false,
+      message: 'Incorrect password. Action cancelled.'
+    });
+    return false;
+  }
+
+  return true;
+}
+
+const SITE_DATE_COLUMNS = ['approved_at', 'terminated_at'];
+
+// Check which optional date columns exist in the current database.
+async function getSiteDateColumnSupport(connection = pool) {
+  const [columns] = await connection.query(
+    `SELECT COLUMN_NAME
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'sites'
+       AND COLUMN_NAME IN (?, ?)`,
+    SITE_DATE_COLUMNS
+  );
+
+  return new Set(columns.map(column => column.COLUMN_NAME));
+}
+
+// Generate the next numeric site code without changing existing codes.
+async function getNextSiteCode(connection = pool) {
+  const [rows] = await connection.query(
+    `SELECT site_code
+     FROM sites
+     WHERE site_code REGEXP '^[0-9]+$'
+     ORDER BY CAST(site_code AS UNSIGNED) DESC
+     LIMIT 1`
+  );
+
+  const nextNumber = rows.length
+    ? Number(rows[0].site_code) + 1
+    : 1;
+
+  if (!Number.isSafeInteger(nextNumber)) {
+    throw new Error('Could not generate a valid site code.');
+  }
+
+  return String(nextNumber).padStart(2, '0');
+}
+
+// GET next suggested site code.
+// IMPORTANT: This route must be before GET /:id.
+router.get(
+  '/next-code/preview',
+  authenticate,
+  authorize('admin', 'manager'),
+  async (req, res) => {
+    try {
+      const site_code = await getNextSiteCode();
+
+      res.json({
+        success: true,
+        data: { site_code }
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to generate site code.'
+      });
+    }
+  }
+);
+
+// GET all sites; supports optional status and name search.
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { status } = req.query;
+    const { status, search } = req.query;
     let sql = 'SELECT * FROM sites WHERE 1=1';
     const params = [];
+
     if (status) {
+      if (!['approved', 'terminated'].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid site status.'
+        });
+      }
+
       sql += ' AND status = ?';
       params.push(status);
     }
-    sql += ' ORDER BY name';
-    const [rows] = await pool.query(sql, params);
-    res.json({ success: true, data: rows });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Failed to fetch sites.' });
-  }
-});
 
-// GET single site
-router.get('/:id', authenticate, async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT * FROM sites WHERE id = ?', [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ success: false, message: 'Site not found.' });
-    res.json({ success: true, data: rows[0] });
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Server error.' });
-  }
-});
-
-// POST add new approved site
-router.post('/', authenticate, authorize('admin', 'manager'), async (req, res) => {
-  try {
-    const { site_code, name, address, town, latitude, longitude, geo_radius_m, notes } = req.body;
-    if (!site_code || !name) {
-      return res.status(400).json({ success: false, message: 'site_code and name are required.' });
+    if (search && String(search).trim()) {
+      sql += ' AND name LIKE ?';
+      params.push(`%${String(search).trim()}%`);
     }
 
-    const [result] = await pool.query(
-      `INSERT INTO sites (site_code, name, address, town, latitude, longitude, geo_radius_m, status, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?)`,
-      [site_code, name, address || null, town || null, latitude || null, longitude || null,
-       geo_radius_m || 150, notes || null]
-    );
+    sql += ' ORDER BY name';
 
-    res.status(201).json({
+    const [rows] = await pool.query(sql, params);
+
+    res.json({
       success: true,
-      message: 'Site added and approved.',
-      data: { id: result.insertId, site_code, name, status: 'approved' }
+      data: rows
     });
   } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ success: false, message: 'Site code already exists.' });
-    }
     console.error(err);
-    res.status(500).json({ success: false, message: 'Failed to add site.' });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch sites.'
+    });
   }
 });
 
-// PUT update site (including terminate)
-router.put('/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+// GET one site by ID.
+router.get('/:id', authenticate, async (req, res) => {
   try {
-    const { name, address, town, latitude, longitude, geo_radius_m, status, notes } = req.body;
-    const updates = [];
-    const params = [];
+    const [rows] = await pool.query(
+      'SELECT * FROM sites WHERE id = ?',
+      [req.params.id]
+    );
 
-    if (name !== undefined) { updates.push('name = ?'); params.push(name); }
-    if (address !== undefined) { updates.push('address = ?'); params.push(address); }
-    if (town !== undefined) { updates.push('town = ?'); params.push(town); }
-    if (latitude !== undefined) { updates.push('latitude = ?'); params.push(latitude); }
-    if (longitude !== undefined) { updates.push('longitude = ?'); params.push(longitude); }
-    if (geo_radius_m !== undefined) { updates.push('geo_radius_m = ?'); params.push(geo_radius_m); }
-    if (status !== undefined) {
-      if (!['approved', 'terminated'].includes(status)) {
-        return res.status(400).json({ success: false, message: 'Status must be approved or terminated.' });
+    if (!rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site not found.'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: rows[0]
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: 'Server error.'
+    });
+  }
+});
+
+// POST create a new approved site.
+// Site code is generated by the backend; the frontend need not send it.
+router.post(
+  '/',
+  authenticate,
+  authorize('admin', 'manager'),
+  async (req, res) => {
+    let connection;
+
+    try {
+ const {
+  name,
+  type,
+  address,
+  town,
+  latitude,
+  longitude,
+  geo_radius_m,
+  notes
+} = req.body;
+
+      if (!name || !String(name).trim()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Site name is required.'
+        });
       }
-      updates.push('status = ?');
-      params.push(status);
+
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+
+      const site_code = await getNextSiteCode(connection);
+      const dateColumns =
+        await getSiteDateColumnSupport(connection);
+
+     const fields = [
+  'site_code',
+  'name',
+  'type',
+  'address',
+  'town',
+  'latitude',
+  'longitude',
+  'geo_radius_m',
+  'status',
+  'notes'
+];
+
+const values = [
+  site_code,
+  String(name).trim(),
+  type ? String(type).trim() : null,
+  address || null,
+  town || null,
+  latitude ?? null,
+  longitude ?? null,
+  geo_radius_m ?? 150,
+  'approved',
+  notes || null
+];
+
+      if (dateColumns.has('approved_at')) {
+        fields.push('approved_at');
+        values.push(new Date());
+      }
+
+      const placeholders = fields.map(() => '?').join(', ');
+
+      const [result] = await connection.query(
+        `INSERT INTO sites (${fields.join(', ')})
+         VALUES (${placeholders})`,
+        values
+      );
+
+      await connection.commit();
+
+      res.status(201).json({
+        success: true,
+        message: 'Site added and approved.',
+        data: {
+          id: result.insertId,
+          site_code,
+          name: String(name).trim(),
+          status: 'approved'
+        }
+      });
+    } catch (err) {
+      if (connection) {
+        await connection.rollback();
+      }
+
+      if (err.code === 'ER_DUP_ENTRY') {
+        return res.status(409).json({
+          success: false,
+          message: 'A site code conflict occurred. Please try again.'
+        });
+      }
+
+      console.error(err);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to add site.'
+      });
+    } finally {
+      if (connection) {
+        connection.release();
+      }
     }
-    if (notes !== undefined) { updates.push('notes = ?'); params.push(notes); }
+  }
+);
 
-    if (updates.length === 0) {
-      return res.status(400).json({ success: false, message: 'No fields to update.' });
+// PUT update site details.
+router.put(
+  '/:id',
+  authenticate,
+  authorize('admin', 'manager'),
+  async (req, res) => {
+    try {
+      if (!(await requireCurrentPassword(req, res))) return;
+
+      const {
+        name,
+        type,
+        address,
+        town,
+        latitude,
+        longitude,
+        geo_radius_m,
+        notes
+      } = req.body;
+
+      const updates = [];
+      const params = [];
+
+      if (name !== undefined) {
+        if (!String(name).trim()) {
+          return res.status(400).json({
+            success: false,
+            message: 'Site name cannot be blank.'
+          });
+        }
+
+        updates.push('name = ?');
+        params.push(String(name).trim());
+      }
+      if (type !== undefined) {
+  updates.push('type = ?');
+  params.push(type ? String(type).trim() : null);
+}
+
+      if (address !== undefined) {
+        updates.push('address = ?');
+        params.push(address || null);
+      }
+
+      if (town !== undefined) {
+        updates.push('town = ?');
+        params.push(town || null);
+      }
+
+      if (latitude !== undefined) {
+        updates.push('latitude = ?');
+        params.push(latitude ?? null);
+      }
+
+      if (longitude !== undefined) {
+        updates.push('longitude = ?');
+        params.push(longitude ?? null);
+      }
+
+      if (geo_radius_m !== undefined) {
+        updates.push('geo_radius_m = ?');
+        params.push(geo_radius_m ?? 150);
+      }
+
+      if (notes !== undefined) {
+        updates.push('notes = ?');
+        params.push(notes || null);
+      }
+
+      if (!updates.length) {
+        return res.status(400).json({
+          success: false,
+          message: 'No fields to update.'
+        });
+      }
+
+      params.push(req.params.id);
+
+      const [result] = await pool.query(
+        `UPDATE sites
+         SET ${updates.join(', ')}
+         WHERE id = ?`,
+        params
+      );
+
+      if (!result.affectedRows) {
+        return res.status(404).json({
+          success: false,
+          message: 'Site not found.'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Site updated successfully.'
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to update site.'
+      });
     }
-
-    params.push(req.params.id);
-    await pool.query(`UPDATE sites SET ${updates.join(', ')} WHERE id = ?`, params);
-
-    res.json({ success: true, message: 'Site updated successfully.' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Failed to update site.' });
   }
-});
+);
 
-// DELETE (soft terminate)
-router.delete('/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
-  try {
-    await pool.query(`UPDATE sites SET status = 'terminated' WHERE id = ?`, [req.params.id]);
-    res.json({ success: true, message: 'Site terminated successfully.' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to terminate site.' });
+// POST approve or reapprove a site.
+router.post(
+  '/:id/approve',
+  authenticate,
+  authorize('admin', 'manager'),
+  async (req, res) => {
+    try {
+      const dateColumns = await getSiteDateColumnSupport();
+      const updates = ["status = 'approved'"];
+
+      if (dateColumns.has('approved_at')) {
+        updates.push('approved_at = CURRENT_TIMESTAMP');
+      }
+
+      if (dateColumns.has('terminated_at')) {
+        updates.push('terminated_at = NULL');
+      }
+
+      const [result] = await pool.query(
+        `UPDATE sites
+         SET ${updates.join(', ')}
+         WHERE id = ?`,
+        [req.params.id]
+      );
+
+      if (!result.affectedRows) {
+        return res.status(404).json({
+          success: false,
+          message: 'Site not found.'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: dateColumns.has('approved_at')
+          ? 'Site approved and approval date recorded.'
+          : 'Site approved. Approval date is not stored because approved_at is absent.'
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to approve site.'
+      });
+    }
   }
-});
+);
+
+// POST terminate a site.
+router.post(
+  '/:id/terminate',
+  authenticate,
+  authorize('admin', 'manager'),
+  async (req, res) => {
+    try {
+      if (!(await requireCurrentPassword(req, res))) return;
+
+      const dateColumns = await getSiteDateColumnSupport();
+      const updates = ["status = 'terminated'"];
+
+      if (dateColumns.has('terminated_at')) {
+        updates.push('terminated_at = CURRENT_TIMESTAMP');
+      }
+
+      const [result] = await pool.query(
+        `UPDATE sites
+         SET ${updates.join(', ')}
+         WHERE id = ?`,
+        [req.params.id]
+      );
+
+      if (!result.affectedRows) {
+        return res.status(404).json({
+          success: false,
+          message: 'Site not found.'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: dateColumns.has('terminated_at')
+          ? 'Site terminated and termination date recorded.'
+          : 'Site terminated. Termination date is not stored because terminated_at is absent.'
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to terminate site.'
+      });
+    }
+  }
+);
+
+// Keep DELETE /:id as a soft termination for compatibility.
+router.delete(
+  '/:id',
+  authenticate,
+  authorize('admin', 'manager'),
+  async (req, res) => {
+    try {
+      if (!(await requireCurrentPassword(req, res))) return;
+
+      const dateColumns = await getSiteDateColumnSupport();
+      const updates = ["status = 'terminated'"];
+
+      if (dateColumns.has('terminated_at')) {
+        updates.push('terminated_at = CURRENT_TIMESTAMP');
+      }
+
+      const [result] = await pool.query(
+        `UPDATE sites
+         SET ${updates.join(', ')}
+         WHERE id = ?`,
+        [req.params.id]
+      );
+
+      if (!result.affectedRows) {
+        return res.status(404).json({
+          success: false,
+          message: 'Site not found.'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Site terminated successfully.'
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to terminate site.'
+      });
+    }
+  }
+);
+
+// Permanently remove a site only if it has no related records.
+// Never delete attendance, assignments, or shifts.
+router.delete(
+  '/:id/permanent',
+  authenticate,
+  authorize('admin'),
+  async (req, res) => {
+    let connection;
+
+    try {
+      if (!(await requireCurrentPassword(req, res))) return;
+
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+
+      const [sites] = await connection.query(
+        'SELECT id, name FROM sites WHERE id = ? FOR UPDATE',
+        [req.params.id]
+      );
+
+      if (!sites.length) {
+        await connection.rollback();
+
+        return res.status(404).json({
+          success: false,
+          message: 'Site not found.'
+        });
+      }
+
+      const checks = [
+        ['attendance', 'attendance records'],
+        ['guard_site_assignments', 'guard-site assignments'],
+        ['scheduled_shifts', 'scheduled shifts']
+      ];
+
+      const linked = [];
+
+      for (const [table, label] of checks) {
+        const [rows] = await connection.query(
+          `SELECT COUNT(*) AS total
+           FROM \`${table}\`
+           WHERE site_id = ?`,
+          [req.params.id]
+        );
+
+        if (Number(rows[0].total) > 0) {
+          linked.push(label);
+        }
+      }
+
+      if (linked.length) {
+        await connection.rollback();
+
+        return res.status(409).json({
+          success: false,
+          message:
+            `Cannot permanently remove this site because it has ${linked.join(', ')}. Terminate it instead.`
+        });
+      }
+
+      await connection.query(
+        'DELETE FROM sites WHERE id = ?',
+        [req.params.id]
+      );
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: 'Site permanently removed.'
+      });
+    } catch (err) {
+      if (connection) {
+        await connection.rollback();
+      }
+
+      console.error(err);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to permanently remove site.'
+      });
+    } finally {
+      if (connection) {
+        connection.release();
+      }
+    }
+  }
+);
 
 module.exports = router;

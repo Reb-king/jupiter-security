@@ -11,11 +11,11 @@ const path = require('path');
 const authRoutes      = require('./routes/auth');
 const userRoutes      = require('./routes/users');
 const siteRoutes      = require('./routes/sites');
-const assignmentRoutes = require('./routes/assignments');
+
 const shiftRoutes     = require('./routes/shifts');
 const attendanceRoutes = require('./routes/attendance');
 const locationRoutes  = require('./routes/locations');
-const payrollRoutes   = require('./routes/payroll');
+const incidentRoutes = require('./routes/incidents');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -36,11 +36,11 @@ app.use(express.static(frontendPath));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/sites', siteRoutes);
-app.use('/api/assignments', assignmentRoutes);
+
 app.use('/api/shifts', shiftRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/locations', locationRoutes);
-app.use('/api/payroll', payrollRoutes);
+app.use('/api/incidents', incidentRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -53,16 +53,37 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Return JSON for unknown API endpoints
+app.use('/api', (req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'API endpoint not found.'
+  });
+});
 // Fallback to frontend
 app.get('*', (req, res) => {
   res.sendFile(path.join(frontendPath, 'index.html'));
 });
 // Error handler
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(err.status || 500).json({
+  console.error(err.stack || err.message);
+
+  let status = err.status || 500;
+  let message = 'Internal server error';
+
+  if (err.name === 'MulterError') {
+    status = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+
+    message = err.code === 'LIMIT_FILE_SIZE'
+      ? 'Each attachment must be 10 MB or smaller.'
+      : 'Invalid attachment upload. Please check the files and try again.';
+  } else if (status >= 400 && status < 500) {
+    message = err.message || 'Request could not be completed.';
+  }
+
+  res.status(status).json({
     success: false,
-    message: err.message || 'Internal server error'
+    message
   });
 });
 
