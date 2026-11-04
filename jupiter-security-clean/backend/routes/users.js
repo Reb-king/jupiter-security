@@ -348,6 +348,164 @@ router.post(
   }
 );
 
+
+/* POST create a second administrator - admin only */
+router.post(
+  '/create-admin',
+  authenticate,
+  authorize('admin'),
+  async (req, res) => {
+    let connection;
+    let transactionStarted = false;
+
+    try {
+      const { full_name, phone, email } = req.body;
+
+      if (
+        typeof full_name !== 'string' ||
+        !full_name.trim() ||
+        full_name.trim().length > 120
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'Enter a valid full name.'
+        });
+      }
+
+      if (
+        typeof phone !== 'string' ||
+        !phone.trim() ||
+        phone.trim().length > 20
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'Enter a valid phone number.'
+        });
+      }
+
+      if (
+        typeof email !== 'string' ||
+        !email.trim() ||
+        email.trim().length > 120 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'A valid email address is required.'
+        });
+      }
+
+      const normalizedEmail = email.trim();
+      const normalizedName = full_name.trim();
+      const normalizedPhone = phone.trim();
+
+      connection = await pool.getConnection();
+
+      await connection.beginTransaction();
+      transactionStarted = true;
+
+      // Generate the next employee code.
+      const [existingUsers] = await connection.query(
+        `SELECT employee_code
+         FROM users
+         WHERE employee_code REGEXP '^JUP-[0-9]+$'
+         FOR UPDATE`
+      );
+
+      let highestNumber = 0;
+
+      for (const user of existingUsers) {
+        const match = user.employee_code.match(/^JUP-(\d+)$/);
+
+        if (match) {
+          highestNumber = Math.max(
+            highestNumber,
+            Number(match[1])
+          );
+        }
+      }
+
+      const employee_code =
+        `JUP-${String(highestNumber + 1).padStart(3, '0')}`;
+
+      // Generate and hash a temporary password.
+      const tempPassword =
+        `Jup-${crypto.randomBytes(12).toString('base64url')}`;
+
+      const hash = await bcrypt.hash(tempPassword, 10);
+
+      const [result] = await connection.query(
+        `INSERT INTO users
+          (employee_code, full_name, phone, email,
+           password_hash, role, hourly_rate, is_active)
+         VALUES (?, ?, ?, ?, ?, 'admin', 0, 1)`,
+        [
+          employee_code,
+          normalizedName,
+          normalizedPhone,
+          normalizedEmail,
+          hash
+        ]
+      );
+
+      // Require successful email delivery.
+      await sendTemporaryPasswordEmail({
+        email: normalizedEmail,
+        fullName: normalizedName,
+        employeeCode: employee_code,
+        tempPassword,
+        subject: 'Your Jupiter Administrator Login Details',
+        actionDescription: 'has been created'
+      });
+
+      await connection.commit();
+      transactionStarted = false;
+
+      return res.status(201).json({
+        success: true,
+        message: 'Administrator created and login details emailed successfully.',
+        data: {
+          id: result.insertId,
+          employee_code,
+          full_name: normalizedName,
+          email: normalizedEmail,
+          role: 'admin',
+          email_sent: true
+        }
+      });
+
+    } catch (err) {
+      if (connection && transactionStarted) {
+        await connection.rollback();
+        transactionStarted = false;
+      }
+
+      if (err.code === 'ER_DUP_ENTRY') {
+        return res.status(409).json({
+          success: false,
+          message: 'This employee code or email address already exists.'
+        });
+      }
+
+      console.error(
+        'Administrator registration failed:',
+        err.code || 'Unexpected error'
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: 'Administrator creation failed. No account was committed. Check email delivery and try again.'
+      });
+
+    } finally {
+      if (connection) {
+        connection.release();
+      }
+    }
+  }
+);
+
+
 // PUT update guard details
 router.put(
   '/:id',
@@ -555,48 +713,88 @@ router.put(
         });
       }
 
-      const [suspendGuardRows] = await pool.query(
-        'SELECT id FROM users WHERE id = ? AND role = ?',
-        [req.params.id, 'guard']
-      );
+      const connection = await pool.getConnection();
 
-      if (suspendGuardRows.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'Guard not found. No changes were made.'
+      try {
+        await connection.beginTransaction();
+
+        const [guardRows] = await connection.query(
+          `SELECT id
+           FROM users
+           WHERE id = ? AND role = ?
+           FOR UPDATE`,
+          [req.params.id, 'guard']
+        );
+
+        if (guardRows.length === 0) {
+          await connection.rollback();
+
+          return res.status(404).json({
+            success: false,
+            message: 'Guard not found. No changes were made.'
+          });
+        }
+
+        await connection.query(
+          `UPDATE users
+           SET is_active = 0, suspended_at = NOW()
+           WHERE id = ? AND role = ?`,
+          [req.params.id, 'guard']
+        );
+
+        await connection.query(
+          `UPDATE guard_site_assignments
+           SET is_current = 0, assigned_to = CURDATE()
+           WHERE guard_id = ? AND is_current = 1`,
+          [req.params.id]
+        );
+
+        const [deletedShifts] = await connection.query(
+          `DELETE FROM scheduled_shifts
+           WHERE guard_id = ?
+             AND shift_date >= CURDATE()`,
+          [req.params.id]
+        );
+
+        const [cancelledCycles] = await connection.query(
+          `UPDATE shift_cycles
+           SET cancelled_at = CURDATE()
+           WHERE guard_id = ?
+             AND cancelled_at IS NULL
+             AND DATE_ADD(cycle_start_date, INTERVAL 14 DAY) >= CURDATE()`,
+          [req.params.id]
+        );
+
+        await connection.commit();
+
+        return res.json({
+          success: true,
+          message:
+            'Guard has been placed On Access. Future shifts have been cleared and active rotation cycles have been cancelled. Historical records and attendance have been preserved.',
+          data: {
+            deleted_future_shifts: deletedShifts.affectedRows,
+            cancelled_rotation_cycles: cancelledCycles.affectedRows
+          }
         });
+
+      } catch (transactionError) {
+        await connection.rollback();
+        throw transactionError;
+
+      } finally {
+        connection.release();
       }
 
-      await pool.query(
-        `UPDATE users
-         SET is_active = 0, suspended_at = NOW()
-         WHERE id = ? AND role = ?`,
-        [req.params.id, 'guard']
-      );
-
-      await pool.query(
-        `UPDATE guard_site_assignments
-         SET is_current = 0, assigned_to = CURDATE()
-         WHERE guard_id = ? AND is_current = 1`,
-        [req.params.id]
-      );
-
-      return res.json({
-        success: true,
-        message:
-          'Guard has been placed On Access. They can no longer be assigned sites or shifts.'
-      });
     } catch (err) {
       console.error('Guard suspension failed:', err.message);
 
       return res.status(500).json({
         success: false,
-        message: 'Failed to suspend guard.'
+        message: 'Failed to suspend guard. No partial changes should remain.'
       });
     }
   }
 );
-
 // Reinstate guard
 router.put(
   '/:id/reinstate',
@@ -955,21 +1153,29 @@ router.post(
 );
 
 /**
- * Allow an authenticated guard to change their own password.
+ * Allow authenticated administrators and guards to change their own password.
  */
 router.post(
   '/change-password',
   authenticate,
-  authorize('guard'),
+  authorize('admin', 'guard'),
   async (req, res) => {
     try {
       const { currentPassword, newPassword } = req.body;
+      const allowedRoles = ['admin', 'guard'];
+      const userRole = req.user.role;
+
+      if (!allowedRoles.includes(userRole)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied.'
+        });
+      }
 
       if (!currentPassword || !newPassword) {
         return res.status(400).json({
           success: false,
-          message:
-            'Enter your current password and your new password.'
+          message: 'Enter your current password and your new password.'
         });
       }
 
@@ -979,16 +1185,14 @@ router.post(
       ) {
         return res.status(400).json({
           success: false,
-          message:
-            'Your new password must be at least 4 characters long.'
+          message: 'Your new password must be at least 4 characters long.'
         });
       }
 
       if (newPassword.length > 128) {
         return res.status(400).json({
           success: false,
-          message:
-            'Your new password must not exceed 128 characters.'
+          message: 'Your new password must not exceed 128 characters.'
         });
       }
 
@@ -996,13 +1200,13 @@ router.post(
         `SELECT password_hash
          FROM users
          WHERE id = ? AND role = ?`,
-        [req.user.id, 'guard']
+        [req.user.id, userRole]
       );
 
       if (rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: 'Guard account not found.'
+          message: 'Your account was not found.'
         });
       }
 
@@ -1021,8 +1225,7 @@ router.post(
       if (currentPassword === newPassword) {
         return res.status(400).json({
           success: false,
-          message:
-            'Your new password must be different from your current password.'
+          message: 'Your new password must be different from your current password.'
         });
       }
 
@@ -1032,14 +1235,13 @@ router.post(
         `UPDATE users
          SET password_hash = ?
          WHERE id = ? AND role = ?`,
-        [newHash, req.user.id, 'guard']
+        [newHash, req.user.id, userRole]
       );
 
       if (result.affectedRows === 0) {
         return res.status(500).json({
           success: false,
-          message:
-            'Your password could not be changed. Please try again.'
+          message: 'Your password could not be changed. Please try again.'
         });
       }
 
@@ -1048,10 +1250,7 @@ router.post(
         message: 'Your password has been changed successfully.'
       });
     } catch (err) {
-      console.error(
-        'Guard password change failed:',
-        err.message
-      );
+      console.error('Password change failed:', err.message);
 
       return res.status(500).json({
         success: false,
@@ -1060,5 +1259,5 @@ router.post(
     }
   }
 );
-
 module.exports = router;
+

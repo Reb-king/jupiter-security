@@ -174,6 +174,7 @@ router.post('/generate', authenticate, authorize('admin', 'manager'), async (req
         `SELECT id, cycle_start_date
          FROM shift_cycles
          WHERE guard_id = ?
+           AND cancelled_at IS NULL
            AND cycle_start_date BETWEEN
                DATE_SUB(?, INTERVAL 14 DAY)
                AND DATE_ADD(?, INTERVAL 14 DAY)
@@ -283,6 +284,166 @@ router.post('/generate', authenticate, authorize('admin', 'manager'), async (req
       success: false,
       message: 'Failed to generate shifts.'
     });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+});
+
+// POST manually assign one Day or Night shift
+router.post('/manual', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  let connection;
+  let transactionStarted = false;
+
+  try {
+    const guardId = Number(req.body.guard_id);
+    const siteId = Number(req.body.site_id);
+    const shiftDate = String(req.body.shift_date || '');
+    const shiftType = String(req.body.shift_type || '').trim().toLowerCase();
+
+    if (!Number.isSafeInteger(guardId) || guardId < 1 ||
+        !Number.isSafeInteger(siteId) || siteId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please select a valid guard and site.'
+      });
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(shiftDate) ||
+        Number.isNaN(Date.parse(`${shiftDate}T00:00:00.000Z`)) ||
+        new Date(`${shiftDate}T00:00:00.000Z`).toISOString().slice(0, 10) !== shiftDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid shift date.'
+      });
+    }
+
+    if (!['day', 'night'].includes(shiftType)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Manual assignments must be Day or Night shifts.'
+      });
+    }
+
+    const times = generateShiftTimes(shiftDate, shiftType);
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    // Lock the guard row to prevent simultaneous shift assignments.
+    const [guards] = await connection.query(
+      `SELECT id
+       FROM users
+       WHERE id = ? AND role = 'guard' AND is_active = 1
+       FOR UPDATE`,
+      [guardId]
+    );
+
+    if (guards.length === 0) {
+      await connection.rollback();
+      transactionStarted = false;
+      return res.status(404).json({
+        success: false,
+        message: 'Guard not found or inactive. No assignment was saved.'
+      });
+    }
+
+    // Only approved sites may receive new assignments.
+    const [sites] = await connection.query(
+      `SELECT id
+       FROM sites
+       WHERE id = ? AND status = 'approved'
+       FOR UPDATE`,
+      [siteId]
+    );
+
+    if (sites.length === 0) {
+      await connection.rollback();
+      transactionStarted = false;
+      return res.status(409).json({
+        success: false,
+        message: 'The selected site is not approved. No assignment was saved.'
+      });
+    }
+
+    // Protect every existing record, including Off and cancelled shifts.
+    const [existingShifts] = await connection.query(
+      `SELECT id, shift_type, status
+       FROM scheduled_shifts
+       WHERE guard_id = ? AND shift_date = ?
+       LIMIT 1
+       FOR UPDATE`,
+      [guardId, shiftDate]
+    );
+
+    if (existingShifts.length > 0) {
+      await connection.rollback();
+      transactionStarted = false;
+      return res.status(409).json({
+        success: false,
+        message: `This guard already has a ${existingShifts[0].shift_type} shift record on ${shiftDate}. No changes were made.`
+      });
+    }
+
+    const [result] = await connection.query(
+      `INSERT INTO scheduled_shifts
+       (guard_id, site_id, shift_date, shift_type,
+        start_time, end_time, status, shift_source)
+       VALUES (?, ?, ?, ?, ?, ?, 'scheduled', 'manual')`,
+      [
+        guardId,
+        siteId,
+        shiftDate,
+        shiftType,
+        times.start_time,
+        times.end_time
+      ]
+    );
+
+    await connection.commit();
+    transactionStarted = false;
+
+    return res.status(201).json({
+      success: true,
+      message: 'Manual shift assigned successfully.',
+      data: {
+        id: result.insertId,
+        guard_id: guardId,
+        site_id: siteId,
+        shift_date: shiftDate,
+        shift_type: shiftType,
+        start_time: times.start_time,
+        end_time: times.end_time,
+        status: 'scheduled',
+        shift_source: 'manual'
+      }
+    });
+
+  } catch (err) {
+    if (connection && transactionStarted) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error('Manual shift rollback failed:', rollbackError);
+      }
+    }
+
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        success: false,
+        message: 'A conflicting shift already exists. No changes were saved.'
+      });
+    }
+
+    console.error('Manual shift assignment failed:', err);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to assign manual shift.'
+    });
+
   } finally {
     if (connection) {
       connection.release();
@@ -546,6 +707,7 @@ router.get(
               MIN(CASE WHEN cycle_start_date > ? THEN cycle_start_date END)
             ) AS cycle_start_date
           FROM shift_cycles
+          WHERE cancelled_at IS NULL OR ? < cancelled_at
           GROUP BY guard_id
         ) cycles
           ON cycles.guard_id = u.id
@@ -562,7 +724,7 @@ router.get(
 
         ORDER BY u.full_name
         `,
-        [date, date, date]
+        [date, date, date, date]
       );
 
       const data = rows.map(row => {
@@ -647,3 +809,4 @@ router.get(
 
 
 module.exports = router;
+

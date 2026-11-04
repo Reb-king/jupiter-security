@@ -346,3 +346,475 @@ th { background: var(--bg); font-weight: 600; font-size: 0.8rem; text-transform:
 }
 
 /* END INCIDENT REPORT FORM DESIGN */
+
+/* INCIDENT REPORTS - LARGE AND READABLE INPUT FIELDS */
+
+#incident-report-form {
+  width: 100%;
+  max-width: 100%;
+  margin-top: 25px;
+}
+
+#incident-report-form .form-group {
+  width: 100%;
+  margin-bottom: 24px;
+}
+
+#incident-report-form label {
+  display: block;
+  font-size: 17px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+#incident-report-form input:not([type="file"]),
+#incident-report-form textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 15px 18px;
+  border: 2px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+  color: #172033;
+  font-family: inherit;
+  font-size: 18px;
+  line-height: 1.6;
+}
+
+#incident-report-form input:not([type="file"]) {
+  min-height: 60px;
+}
+
+#incident-report-form textarea {
+  min-height: 150px;
+  resize: vertical;
+}
+
+#incident-report-form #incident-description {
+  min-height: 250px;
+}
+
+#incident-report-form #actions-taken,
+#incident-report-form #incident-witness {
+  min-height: 190px;
+}
+
+#incident-report-form input[type="file"] {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 75px;
+  padding: 20px;
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  font-size: 16px;
+  background: #f8fafc;
+}
+
+#incident-report-form input:focus,
+#incident-report-form textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
+}
+
+#incident-report-form small {
+  display: block;
+  margin-top: 10px;
+  font-size: 15px;
+}
+
+#incident-report-form button[type="submit"] {
+  min-height: 60px;
+  min-width: 260px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+@media (max-width: 700px) {
+  #incident-report-form input:not([type="file"]),
+  #incident-report-form textarea {
+    font-size: 16px;
+  }
+
+  #incident-report-form button[type="submit"] {
+    width: 100%;
+  }
+}
+
+/* END LARGE INCIDENT REPORT INPUTS */
+
+
+/* LARGE INCIDENT GUARD SEARCH */
+#incident-guard-search {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 70px;
+  padding: 18px 22px;
+  border: 3px solid var(--accent);
+  border-radius: 10px;
+  background: #fff;
+  color: #172033;
+  font-family: inherit;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+#incident-guard-search::placeholder {
+  color: #64748b;
+  font-size: 18px;
+}
+
+#incident-guard-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.2);
+}
+
+label[for="incident-guard-search"] {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+
+/* ==========================================
+   JUPITER RESPONSIVE DESIGN
+   Phones, Tablets and Desktop Computers
+========================================== */
+
+/* Prevent unwanted horizontal page overflow */
+html {
+  width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  width: 100%;
+  overflow-x: hidden;
+}
+
+#app,
+#main-screen,
+main {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+main {
+  overflow-x: hidden;
+}
+
+.card,
+.stat,
+.incident-report-card {
+  min-width: 0;
+  max-width: 100%;
+}
+
+img,
+video,
+iframe {
+  max-width: 100%;
+}
+
+/* Tables remain readable on smaller screens */
+table {
+  max-width: 100%;
+}
+
+@media (max-width: 1024px) {
+
+  main {
+    padding: 1.1rem;
+  }
+
+  .grid {
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  }
+
+  .card {
+    padding: 1rem;
+  }
+
+  header {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  #sidebar {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+}
+
+/* Mobile phones */
+@media (max-width: 700px) {
+
+  /* Header */
+  header {
+    padding: 0.85rem;
+    flex-direction: column;
+    align-items: stretch;
+    text-align: center;
+  }
+
+  .brand {
+    font-size: 1rem;
+  }
+
+  .user-info {
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+  }
+
+  /* Navigation */
+  #sidebar {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 0.35rem;
+    padding: 0.6rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    scrollbar-width: thin;
+  }
+
+  .nav-btn {
+    flex: 0 0 auto;
+    padding: 0.7rem 0.9rem;
+    font-size: 0.85rem;
+    min-height: 42px;
+  }
+
+  /* Main content */
+  main {
+    padding: 0.7rem;
+  }
+
+  .card {
+    padding: 0.9rem;
+    margin-bottom: 0.85rem;
+    border-radius: 10px;
+  }
+
+  .card h2 {
+    font-size: 1.05rem;
+  }
+
+  /* Dashboard cards */
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem;
+  }
+
+  .stat {
+    padding: 0.85rem 0.5rem;
+  }
+
+  .stat .value {
+    font-size: 1.4rem;
+  }
+
+  .stat .label {
+    font-size: 0.75rem;
+  }
+
+  /* Tables */
+  table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    font-size: 0.82rem;
+  }
+
+  th,
+  td {
+    padding: 0.6rem;
+  }
+
+  /* Forms */
+  .form-row {
+    flex-direction: column;
+    width: 100%;
+    gap: 0.6rem;
+  }
+
+  .form-row input,
+  .form-row select,
+  .form-row textarea {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  input,
+  select,
+  textarea {
+    max-width: 100%;
+  }
+
+  /* Buttons */
+  button,
+  .btn,
+  .btn-outline,
+  .btn-danger,
+  .btn-success {
+    max-width: 100%;
+  }
+
+  .clock-actions {
+    flex-wrap: wrap;
+    gap: 0.65rem;
+  }
+
+  .clock-actions button {
+    flex: 1 1 130px;
+    padding: 0.85rem;
+    font-size: 1rem;
+  }
+
+  .clock-panel .time {
+    font-size: 2rem;
+  }
+
+  /* Login */
+  #login-screen {
+    padding: 1rem;
+  }
+
+  .login-card {
+    padding: 1.5rem;
+    width: 100%;
+  }
+
+  /* Incident reports */
+  .incident-report-card {
+    width: 100%;
+    padding: 1rem;
+    margin: 0.5rem auto;
+  }
+
+  .incident-report-form .form-row {
+    grid-template-columns: 1fr;
+  }
+
+  #incident-guard-search {
+    min-height: 55px;
+    padding: 12px;
+    font-size: 16px;
+  }
+
+  #incident-guard-search::placeholder {
+    font-size: 15px;
+  }
+
+  #incident-report-form button[type="submit"] {
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* Maps */
+  .leaflet-container {
+    max-width: 100%;
+  }
+
+}
+
+/* Very small phones */
+@media (max-width: 380px) {
+
+  main {
+    padding: 0.5rem;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .login-card {
+    padding: 1.1rem;
+  }
+
+  .brand {
+    font-size: 0.9rem;
+  }
+
+  .nav-btn {
+    padding: 0.65rem 0.75rem;
+    font-size: 0.8rem;
+  }
+
+}
+
+/* Landscape phones */
+@media (max-height: 500px) and (max-width: 900px) {
+
+  #login-screen {
+    align-items: flex-start;
+    padding: 1rem;
+  }
+
+  .login-card {
+    margin: auto;
+  }
+
+}
+
+
+/* END LARGE INCIDENT GUARD SEARCH */
+
+
+/* ========== JUPITER COMPANY WATERMARK ========== */
+
+#login-screen,
+#main-screen {
+  position: relative;
+  isolation: isolate;
+}
+
+#login-screen::before,
+#main-screen::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: url("../assets/images/jupiter-watermark.png.jpeg");
+  background-repeat: no-repeat;
+  background-position: center center;
+  background-size: min(75vw, 750px);
+  opacity: 0.09;
+  pointer-events: none;
+  z-index: -1;
+}
+
+#login-screen::before {
+  opacity: 0.13;
+}
+
+#main-screen::before {
+  opacity: 0.08;
+}
+
+#login-screen .login-card {
+  position: relative;
+  z-index: 1;
+}
+
+#main-screen header,
+#main-screen nav,
+#main-screen main {
+  position: relative;
+  z-index: 1;
+}
+
+/* END JUPITER COMPANY WATERMARK */
+

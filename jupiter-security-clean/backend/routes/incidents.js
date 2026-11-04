@@ -97,6 +97,39 @@ async function getFileType(filePath) {
   return module.fileTypeFromFile(filePath);
 }
 
+// GUARD: GET TODAY'S SCHEDULED SITE FOR INCIDENT LOCATION
+router.get('/my-location', authenticate, authorize('guard'), async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT s.id, s.name, s.address
+      FROM scheduled_shifts ss
+      JOIN users u ON u.id = ss.guard_id
+      JOIN sites s ON s.id = ss.site_id
+      WHERE ss.guard_id = ?
+        AND ss.shift_date = CURDATE()
+        AND u.role = 'guard'
+        AND u.is_active = 1
+      ORDER BY ss.id DESC
+      LIMIT 1
+    `, [req.user.id]);
+
+    const site = rows.length
+      ? {
+          id: rows[0].id,
+          name: rows[0].name,
+          address: rows[0].address || ''
+        }
+      : null;
+
+    res.json({ success: true, data: site });
+  } catch (err) {
+    console.error('Failed to fetch guard scheduled site:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch your scheduled site.'
+    });
+  }
+});
 // GUARD: SUBMIT AN INCIDENT REPORT
 router.post(
   '/',
@@ -408,6 +441,27 @@ router.get(
 
       res.setHeader('X-Content-Type-Options', 'nosniff');
 
+      // VIEW IMAGE OR PDF IN THE BROWSER
+      if (req.query.view === '1') {
+        const detected = await getFileType(fullPath);
+
+        if (!detected || !allowedTypes[detected.mime]) {
+          return res.status(415).json({
+            success: false,
+            message: 'Unsupported attachment viewing format.'
+          });
+        }
+
+        res.setHeader('Content-Type', detected.mime);
+        res.setHeader(
+          'Content-Disposition',
+          'inline; filename="' + safeOriginalName(attachment.file_name) + '"'
+        );
+
+        return res.sendFile(fullPath);
+      }
+
+      // KEEP EXISTING DOWNLOAD BEHAVIOUR
       res.download(fullPath, attachment.file_name);
     } catch (error) {
       next(error);
@@ -416,3 +470,4 @@ router.get(
 );
 
 module.exports = router;
+
