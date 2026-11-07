@@ -286,36 +286,37 @@ router.post(
 
       let emailSent = false;
 
-      // Only attempt email when an email address was provided.
-      if (normalizedEmail) {
-        try {
-          emailSent = await sendTemporaryPasswordEmail({
-            email: normalizedEmail,
-            fullName: full_name.trim(),
-            employeeCode: employee_code,
-            tempPassword,
-            subject:
-              'Your Jupiter Security Management System Login Details',
-            actionDescription: 'has been created'
-          });
-        } catch (mailError) {
-          // Do not log the password or other credentials.
-          console.error(
-            'Registration email failed:',
-            mailError.message
-          );
-        }
+      // Use the guard's personal email when supplied.
+      // Otherwise, send login details to the company fallback inbox.
+      const fallbackEmail = 'jupiter.security26@gmail.com';
+      const notificationEmail = normalizedEmail || fallbackEmail;
+      const usedCompanyFallback = !normalizedEmail;
+
+      try {
+        emailSent = await sendTemporaryPasswordEmail({
+          email: notificationEmail,
+          fullName: full_name.trim(),
+          employeeCode: employee_code,
+          tempPassword,
+          subject:
+            'Your Jupiter Security Management System Login Details',
+          actionDescription: 'has been created'
+        });
+      } catch (mailError) {
+        // Do not log the password or other credentials.
+        console.error(
+          'Registration email failed:',
+          mailError.message
+        );
       }
 
-      // Password is returned only when email was not sent.
-      // This endpoint is restricted to authenticated management users.
       return res.status(201).json({
         success: true,
         message: emailSent
-          ? 'User registered and login details emailed successfully.'
-          : normalizedEmail
-            ? 'User created, but email delivery failed. Provide the temporary password to the guard securely.'
-            : 'User created without an email address. Provide the temporary password to the guard securely.',
+          ? usedCompanyFallback
+            ? 'User registered. Login details emailed to the company notification address.'
+            : 'User registered and login details emailed successfully.'
+          : 'User created, but email delivery failed. Provide the temporary password to the guard securely.',
         data: {
           id: result.insertId,
           employee_code,
@@ -324,7 +325,9 @@ router.post(
           email: normalizedEmail,
           role: userRole,
           email_sent: emailSent,
-          ...(!emailSent
+          notification_email: notificationEmail,
+          used_company_fallback: usedCompanyFallback,
+          ...(usedCompanyFallback || !emailSent
             ? { temp_password: tempPassword }
             : {})
         }
@@ -1158,11 +1161,11 @@ router.post(
 router.post(
   '/change-password',
   authenticate,
-  authorize('admin', 'guard'),
+  authorize('admin', 'guard', 'manager'),
   async (req, res) => {
     try {
       const { currentPassword, newPassword } = req.body;
-      const allowedRoles = ['admin', 'guard'];
+      const allowedRoles = ['admin', 'guard', 'manager'];
       const userRole = req.user.role;
 
       if (!allowedRoles.includes(userRole)) {
@@ -1260,4 +1263,6 @@ router.post(
   }
 );
 module.exports = router;
+
+
 

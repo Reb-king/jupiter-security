@@ -3,6 +3,12 @@
 const API = '/api';
 let token = localStorage.getItem('jupiter_token');
 let currentUser = null;
+
+let attendanceEventsController = null;
+let attendanceEventsRetryTimer = null;
+let currentPage = null;
+let shiftScheduleRealtimeRefresh = null;
+
 // ---------- Login Password Visibility ----------
 document.addEventListener('DOMContentLoaded', () => {
   const passwordInput = document.getElementById('login-password');
@@ -163,12 +169,173 @@ async function api(path, options = {}) {
 }
 
 
+// ---------- Realtime Attendance Updates ----------
+function stopAttendanceRealtime() {
+  if (attendanceEventsRetryTimer !== null) {
+    clearTimeout(attendanceEventsRetryTimer);
+    attendanceEventsRetryTimer = null;
+  }
+
+  if (attendanceEventsController) {
+    attendanceEventsController.abort();
+    attendanceEventsController = null;
+  }
+}
+
+function startAttendanceRealtime() {
+  if (!token || !currentUser) return;
+
+  stopAttendanceRealtime();
+
+  const controller = new AbortController();
+  attendanceEventsController = controller;
+
+  async function connect() {
+    try {
+      const response = await fetch(`${API}/attendance/events`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'text/event-stream'
+        },
+        signal: controller.signal
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error('Realtime connection failed.');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        while (true) {
+          const boundary = buffer.search(/\r?\n\r?\n/);
+
+          if (boundary === -1) break;
+
+          const separator = buffer.match(/\r?\n\r?\n/)[0];
+          const message = buffer.slice(0, boundary);
+
+          buffer = buffer.slice(boundary + separator.length);
+
+          let eventName = '';
+          let eventData = '';
+
+          for (const line of message.split(/\r?\n/)) {
+            if (line.startsWith('event:')) {
+              eventName = line.slice(6).trim();
+            }
+
+            if (line.startsWith('data:')) {
+              eventData += line.slice(5).trim();
+            }
+          }
+
+          if (eventName === 'attendance' && eventData) {
+            try {
+              handleAttendanceRealtimeEvent(
+                JSON.parse(eventData)
+              );
+            } catch (err) {
+              console.error('Invalid attendance event:', err);
+            }
+          }
+          if (eventName === 'shift' && eventData) {
+            console.log('REALTIME SHIFT EVENT RECEIVED:', eventData);
+            try {
+              JSON.parse(eventData);
+
+              if (typeof shiftScheduleRealtimeRefresh === 'function') {
+                shiftScheduleRealtimeRefresh();
+              }
+            } catch (err) {
+              console.error('Invalid shift event:', err);
+            }
+          }
+        }
+      }
+
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        console.warn('Attendance realtime connection interrupted:', err.message);
+      }
+    } finally {
+      if (
+        attendanceEventsController === controller &&
+        token &&
+        currentUser
+      ) {
+        attendanceEventsRetryTimer = setTimeout(() => {
+          startAttendanceRealtime();
+        }, 3000);
+      }
+    }
+  }
+
+  connect();
+}
+
+function handleAttendanceRealtimeEvent(eventData) {
+  console.log('Realtime attendance update:', eventData);
+
+  if (!currentUser) return;
+
+  const page = currentPage;
+
+  // Refresh only screens affected by attendance changes.
+  if (
+    page === 'dashboard' ||
+    page === 'attendance' ||
+    page === 'location'
+  ) {
+    loadPage(page);
+  }
+}
+
+
+
 function show(el) {
   el.classList.remove('hidden');
 }
 
 function hide(el) {
   el.classList.add('hidden');
+}
+
+// Format UTC database timestamps as Namibia local time (UTC+2)
+function formatNamibiaDateTime(value) {
+  if (!value) return '-';
+
+  const utcValue = String(value).replace(' ', 'T');
+
+  const date = new Date(
+    /Z$|[+-]\d{2}:\d{2}$/.test(utcValue)
+      ? utcValue
+      : utcValue + 'Z'
+  );
+
+  if (Number.isNaN(date.getTime())) return escapeHTML(value);
+
+  return escapeHTML(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Africa/Windhoek',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    }).format(date).replace(',', '')
+  );
 }
 
 function formatNAD(n) {
@@ -246,7 +413,8 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 });
 
 document.getElementById('btn-logout').addEventListener('click', () => {
-    stopGuardGpsTracking();
+  stopAttendanceRealtime();
+  stopGuardGpsTracking();
   token = null;
   currentUser = null;
 
@@ -278,7 +446,7 @@ function enterApp() {
 
   document.querySelectorAll('.admin-guard-only').forEach(el => {
     el.style.display =
-      (currentUser.role === 'admin' || currentUser.role === 'guard')
+      (currentUser.role === 'admin' || currentUser.role === 'guard' || currentUser.role === 'manager')
         ? ''
         : 'none';
   });
@@ -291,6 +459,7 @@ function enterApp() {
     stopGuardGpsTracking();
   }
 
+    startAttendanceRealtime();
   loadPage('dashboard');
 }
 
@@ -308,6 +477,7 @@ document.getElementById('sidebar').addEventListener('click', (e) => {
 });
 
 async function loadPage(page) {
+    currentPage = page;
   if (jupiterLiveLocationTimer !== null) {
     clearInterval(jupiterLiveLocationTimer);
     jupiterLiveLocationTimer = null;
@@ -344,7 +514,7 @@ async function loadPage(page) {
 
 // ---------- Change Password ----------
 async function renderChangePassword(el) {
-  if (!currentUser || !['admin', 'guard'].includes(currentUser.role)) {
+  if (!currentUser || !['admin', 'guard', 'manager'].includes(currentUser.role)) {
     el.innerHTML = '<p class="error">Access denied.</p>';
     return;
   }
@@ -451,15 +621,15 @@ async function renderDashboard(el) {
         });
 
       document.getElementById('dash-stats').innerHTML = `
-        <div class="stat">
+        <div class="stat" id="dash-active-guards" role="button" tabindex="0">
           <div class="value">${guards.data.length}</div>
           <div class="label">Active Guards</div>
         </div>
-        <div class="stat">
+        <div class="stat" id="dash-approved-sites" role="button" tabindex="0">
           <div class="value">${sites.data.length}</div>
           <div class="label">Approved Sites</div>
         </div>
-        <div class="stat">
+        <div class="stat" id="dash-currently-on-duty" role="button" tabindex="0">
           <div class="value">
             ${live.data.filter(l => l.is_on_duty).length}
           </div>
@@ -484,6 +654,27 @@ async function renderDashboard(el) {
         }, 150);
       };
 
+      const dashboardCards = [
+        { id: 'dash-active-guards', page: 'guards' },
+        { id: 'dash-approved-sites', page: 'sites' },
+        { id: 'dash-currently-on-duty', page: 'location' }
+      ];
+
+      dashboardCards.forEach(({ id, page }) => {
+        const card = document.getElementById(id);
+        if (!card) return;
+
+        const openPage = () =>
+          document.querySelector(`[data-page="${page}"]`)?.click();
+
+        card.addEventListener('click', openPage);
+        card.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openPage();
+          }
+        });
+      });
       missingCard.addEventListener('click', openMissingReport);
       missingCard.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -1397,7 +1588,7 @@ async function renderShifts(el) {
   }
 
   const shiftsResult = await api('/shifts');
-  const allShifts = Array.isArray(shiftsResult.data) ? shiftsResult.data : [];
+  let allShifts = Array.isArray(shiftsResult.data) ? shiftsResult.data : [];
   const today = localDateString();
 
   el.innerHTML = `
@@ -1429,7 +1620,10 @@ async function renderShifts(el) {
 
       ${isManager ? `
         <div class="form-row">
-          <select id="sh-guard">
+          <input type="search" id="sh-guard-search"
+  placeholder="Search guard by name or employee code..."
+  aria-label="Search guards for shift generation" />
+<select id="sh-guard">
             <option value="">All Guards</option>
             ${guards.map(g => `
               <option value="${Number(g.id)}">
@@ -1461,7 +1655,10 @@ async function renderShifts(el) {
         <div class="form-row" style="align-items:center;gap:12px;flex-wrap:wrap;">
           <strong style="flex-basis:100%;">Manual Shift Assignment</strong>
 
-          <select id="sh-manual-guard" required>
+          <input type="search" id="sh-manual-guard-search"
+  placeholder="Search guard by name or employee code..."
+  aria-label="Search guards for manual shift assignment" />
+<select id="sh-manual-guard" required>
             <option value="">Select Guard</option>
             ${guards.map(g => `
               <option value="${Number(g.id)}">
@@ -1759,8 +1956,66 @@ if (selectedDate &&
       </tr>
     `;
   }
+      let shiftRefreshInProgress = false;
+
+  async function refreshShiftData() {
+    if (shiftRefreshInProgress) return;
+
+    const panel = document.getElementById('sh-schedule-panel');
+
+    if (isManager && (!panel || panel.hidden)) return;
+    if (!isManager && currentPage !== 'shifts') return;
+
+    shiftRefreshInProgress = true;
+
+    try {
+      const result = await api('/shifts');
+
+      allShifts = Array.isArray(result.data) ? result.data : [];
+
+      renderShiftRows();
+
+    } catch (err) {
+      console.warn('Automatic shift refresh failed:', err.message);
+    } finally {
+      shiftRefreshInProgress = false;
+    }
+  }
+    shiftScheduleRealtimeRefresh = refreshShiftData;
 
   if (isManager) {
+    const setupGuardSearch = (searchId, selectId) => {
+      const search = document.getElementById(searchId);
+      const select = document.getElementById(selectId);
+
+      const originalOptions = Array.from(select.options)
+        .map(option => option.cloneNode(true));
+
+      search.addEventListener('input', () => {
+        const term = search.value.trim().toLowerCase();
+        const previousValue = select.value;
+
+        select.replaceChildren();
+
+        originalOptions.forEach((option, index) => {
+          if (
+            index === 0 ||
+            option.textContent.toLowerCase().includes(term)
+          ) {
+            select.appendChild(option.cloneNode(true));
+          }
+        });
+
+        const previousOption = Array.from(select.options)
+          .find(option => option.value === previousValue);
+
+        select.value = previousOption ? previousValue : '';
+      });
+    };
+
+    setupGuardSearch('sh-guard-search', 'sh-guard');
+    setupGuardSearch('sh-manual-guard-search', 'sh-manual-guard');
+
     document.getElementById('sh-guard')
       .addEventListener('change', renderShiftRows);
 
@@ -2037,6 +2292,8 @@ if (isManager) {
   document.getElementById('btn-load-missing')
     .addEventListener('click', loadMissingShiftReport);
 
+    let shiftRefreshTimer = null;
+
   function showShiftSection(section) {
     schedulePanel.hidden = section !== 'shifts';
     coverageSection.hidden = section !== 'coverage';
@@ -2056,6 +2313,19 @@ if (isManager) {
     missingToggle.setAttribute(
       'aria-expanded', String(section === 'missing')
     );
+
+    if (shiftRefreshTimer !== null) {
+      clearInterval(shiftRefreshTimer);
+      shiftRefreshTimer = null;
+    }
+
+    if (section === 'shifts') {
+      refreshShiftData();
+
+      shiftRefreshTimer = setInterval(() => {
+        refreshShiftData();
+      }, 30000);
+    }
   }
 
   shiftsToggle.addEventListener('click', () => {
@@ -2139,18 +2409,43 @@ async function renderAttendance(el) {
   const path = isGuard ? '/attendance/my' : '/attendance';
 
   const data = await api(path);
+  const savedDate = !isGuard ? (data.visible_from || '') : '';
 
   el.innerHTML = `
     <div class="card">
       <h2>Attendance Records</h2>
 
       ${!isGuard ? `
-        <div style="margin-bottom:1rem;">
-          <button id="clear-attendance-button" class="btn btn-primary">
-            Clear Older Attendance
-          </button>
-          <p style="color:var(--muted);margin-top:0.5rem;">
-            Hides attendance records before today. Records are not deleted.
+        <div style="margin-bottom:1.5rem;padding:1rem;border:1px solid var(--border);border-radius:8px;">
+          <h3>Attendance Visibility</h3>
+
+          <p style="color:var(--muted);margin-bottom:0.75rem;">
+            Select a date. Attendance records before this date will be hidden
+            from management and guard attendance views. Records will not be deleted.
+          </p>
+
+          <div style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap;">
+            <div style="flex:1;min-width:200px;">
+              <label for="attendance-visible-from" style="display:block;margin-bottom:0.4rem;">
+                Show attendance from:
+              </label>
+              <input
+                type="date"
+                id="attendance-visible-from"
+                value="${escapeHTML(savedDate)}"
+                required
+                style="width:100%;"
+              >
+            </div>
+
+            <button id="apply-attendance-date" class="btn btn-primary">
+              Apply Visibility Date
+            </button>
+          </div>
+
+          <p style="color:var(--muted);margin-top:0.75rem;font-size:0.9rem;">
+            The selected date remains visible. You can select an earlier date
+            later to restore visibility of older records.
           </p>
         </div>
       ` : ''}
@@ -2160,7 +2455,7 @@ async function renderAttendance(el) {
           <thead>
             <tr>
               <th>Guard</th><th>Site</th><th>Clock In</th><th>Clock Out</th>
-              <th>Hours</th><th>In Geo?</th><th>Out Geo?</th>
+              <th>Hours</th>
             </tr>
           </thead>
           <tbody>
@@ -2168,15 +2463,13 @@ async function renderAttendance(el) {
               <tr>
                 <td>${escapeHTML(a.guard_name || a.employee_code || '-')}</td>
                 <td>${escapeHTML(a.site_name || '-')}</td>
-                <td>${escapeHTML(a.clock_in_at ? String(a.clock_in_at).replace('T', ' ').slice(0, 19) : '-')}</td>
+                <td>${formatNamibiaDateTime(a.clock_in_at)}</td>
                 <td>${a.clock_out_at
-                  ? escapeHTML(String(a.clock_out_at).replace('T', ' ').slice(0, 19))
+                  ? formatNamibiaDateTime(a.clock_out_at)
                   : '<em>Still on duty</em>'}</td>
                 <td>${escapeHTML(a.hours_worked ?? '-')}</td>
-                <td>${a.clock_in_within_geofence == 1 ? '✓' : a.clock_in_within_geofence == 0 ? '✗' : '-'}</td>
-                <td>${a.clock_out_within_geofence == 1 ? '✓' : a.clock_out_within_geofence == 0 ? '✗' : '-'}</td>
               </tr>
-            `).join('') || '<tr><td colspan="7">No records</td></tr>'}
+            `).join('') || '<tr><td colspan="5">No records</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -2184,25 +2477,43 @@ async function renderAttendance(el) {
   `;
 
   if (!isGuard) {
-    const clearButton = document.getElementById('clear-attendance-button');
+    const dateInput = document.getElementById('attendance-visible-from');
+    const applyButton = document.getElementById('apply-attendance-date');
 
-    if (clearButton) {
-      clearButton.onclick = async () => {
+    if (dateInput && applyButton) {
+      applyButton.onclick = async () => {
+        const selectedDate = dateInput.value;
+
+        if (!selectedDate) {
+          alert('Please select a date first.');
+          return;
+        }
+
         const confirmed = confirm(
-          'Hide attendance records dated before today? This affects management and guard attendance views. No records will be deleted.'
+          `Hide attendance records before ${selectedDate}?\n\n` +
+          `Records on and after this date will remain visible.\n\n` +
+          `No attendance records will be deleted.`
         );
 
         if (!confirmed) return;
 
+        applyButton.disabled = true;
+        applyButton.textContent = 'Applying...';
+
         try {
           const result = await api('/attendance/clear', {
-            method: 'POST'
+            method: 'POST',
+            body: JSON.stringify({ date: selectedDate })
           });
 
-          alert(result.message || 'Older attendance has been hidden.');
+          alert(result.message || 'Attendance visibility updated.');
+
           await renderAttendance(el);
+
         } catch (err) {
-          alert(err.message || 'Failed to clear older attendance.');
+          alert(err.message || 'Failed to update attendance visibility.');
+          applyButton.disabled = false;
+          applyButton.textContent = 'Apply Visibility Date';
         }
       };
     }
@@ -2428,8 +2739,30 @@ async function renderLocation(el) {
       jupiterLiveLocationMarkers.clearLayers();
 
       const bounds = [];
+      let onDutyCount = 0;
+      let validGpsCount = 0;
+      let missingGpsCount = 0;
 
       locations.forEach(l => {
+        const onDuty = Boolean(Number(l.is_on_duty));
+
+        if (onDuty) {
+          onDutyCount++;
+        }
+
+        // Check for missing coordinates before Number() conversion.
+        if (
+          l.latitude === null ||
+          l.latitude === undefined ||
+          l.latitude === '' ||
+          l.longitude === null ||
+          l.longitude === undefined ||
+          l.longitude === ''
+        ) {
+          missingGpsCount++;
+          return;
+        }
+
         const latitude = Number(l.latitude);
         const longitude = Number(l.longitude);
 
@@ -2441,10 +2774,11 @@ async function renderLocation(el) {
           longitude < -180 ||
           longitude > 180
         ) {
+          missingGpsCount++;
           return;
         }
 
-        const onDuty = Boolean(Number(l.is_on_duty));
+        validGpsCount++;
 
         const marker = L.circleMarker([latitude, longitude], {
           radius: 9,
@@ -2476,7 +2810,10 @@ async function renderLocation(el) {
 
       if (status) {
         status.textContent =
-          `Last refreshed: ${new Date().toLocaleTimeString()} | ${bounds.length} guard location(s) found.`;
+          `Last refreshed: ${new Date().toLocaleTimeString()} | ` +
+          `${onDutyCount} guard(s) on duty | ` +
+          `${validGpsCount} with valid GPS | ` +
+          `${missingGpsCount} without valid GPS.`;
       }
 
       // Only fit guard bounds if the user has not selected
@@ -2500,7 +2837,6 @@ async function renderLocation(el) {
       }
     }
   };
-
   await loadLocations();
 
   setTimeout(() => {
@@ -3248,6 +3584,7 @@ async function renderIncidents(el) {
 }
 
 // ---------- Clock In / Out ----------
+// ---------- Clock Page ----------
 async function renderClock(el) {
   el.innerHTML = `
     <div class="card clock-panel">
@@ -3255,8 +3592,8 @@ async function renderClock(el) {
       <div class="time" id="clock-time"></div>
       <p id="clock-status">Checking status...</p>
       <div class="clock-actions">
-        <button class="btn-success" id="btn-clock-in">CLOCK IN</button>
-        <button class="btn-danger" id="btn-clock-out">CLOCK OUT</button>
+        <button class="btn-success" id="btn-clock-in" disabled>CLOCK IN</button>
+        <button class="btn-danger" id="btn-clock-out" disabled>CLOCK OUT</button>
       </div>
       <p style="margin-top:1.5rem;font-size:0.85rem;color:var(--muted)">
         Your browser will request location permission for geofence checks.
@@ -3265,6 +3602,13 @@ async function renderClock(el) {
   `;
 
   const clockElement = document.getElementById('clock-time');
+  const statusElement = document.getElementById('clock-status');
+  const clockInButton = document.getElementById('btn-clock-in');
+  const clockOutButton = document.getElementById('btn-clock-out');
+
+  let busy = false;
+  let statusLoaded = false;
+
   const updateTime = () => {
     if (clockElement && clockElement.isConnected) {
       clockElement.textContent = new Date().toLocaleTimeString('en-NA');
@@ -3273,8 +3617,10 @@ async function renderClock(el) {
 
   updateTime();
 
-  // Keep only one clock timer alive when switching pages.
-  if (window.jupiterClockTimer) clearInterval(window.jupiterClockTimer);
+  if (window.jupiterClockTimer) {
+    clearInterval(window.jupiterClockTimer);
+  }
+
   window.jupiterClockTimer = setInterval(updateTime, 1000);
 
   function getPosition() {
@@ -3292,44 +3638,115 @@ async function renderClock(el) {
     });
   }
 
-  document.getElementById('btn-clock-in').onclick = async () => {
+  function updateButtons(clockedIn) {
+    clockInButton.disabled = busy || clockedIn;
+    clockOutButton.disabled = busy || !clockedIn;
+  }
+
+  async function refreshClockStatus() {
+    clockInButton.disabled = true;
+    clockOutButton.disabled = true;
+    statusElement.textContent = 'Checking status...';
+
+    try {
+      const res = await api('/attendance/status');
+
+      if (!res.success) {
+        throw new Error(res.message || 'Could not check clock status.');
+      }
+
+      const clockedIn = res.data.clocked_in;
+
+      statusLoaded = true;
+      updateButtons(clockedIn);
+
+      if (clockedIn) {
+        const siteName = res.data.attendance?.site_name || 'Assigned site';
+
+        statusElement.textContent =
+          `Currently clocked in at ${siteName}.`;
+
+        startGuardGpsTracking();
+      } else {
+        statusElement.textContent = 'You are currently clocked out.';
+      }
+
+    } catch (err) {
+      statusLoaded = false;
+      clockInButton.disabled = true;
+      clockOutButton.disabled = true;
+
+      statusElement.textContent =
+        'Unable to verify clock status. Please refresh or try again.';
+
+      console.error('Clock status check failed:', err);
+    }
+  }
+
+  clockInButton.onclick = async () => {
+    if (busy || !statusLoaded) return;
+
+    busy = true;
+    updateButtons(false);
+    statusElement.textContent = 'Processing clock-in...';
+
     try {
       const coords = await getPosition();
+
       const res = await api('/attendance/clock-in', {
         method: 'POST',
         body: JSON.stringify(coords)
       });
 
-      document.getElementById('clock-status').textContent =
-        `Clocked in at ${res.data.site_name} ` +
-        `${res.data.within_geofence ? '(inside geofence ✓)' : '(outside geofence ✗)'}`;
-
       startGuardGpsTracking();
+
+      statusElement.textContent =
+        `Clocked in at ${res.data.site_name}.`;
+
       alert(res.message);
+
     } catch (err) {
       alert(err.message);
+
+    } finally {
+      busy = false;
+      await refreshClockStatus();
     }
   };
 
-  document.getElementById('btn-clock-out').onclick = async () => {
+  clockOutButton.onclick = async () => {
+    if (busy || !statusLoaded) return;
+
+    busy = true;
+    updateButtons(true);
+    statusElement.textContent = 'Processing clock-out...';
+
     try {
       const coords = await getPosition();
+
       const res = await api('/attendance/clock-out', {
         method: 'POST',
         body: JSON.stringify(coords)
       });
 
-      document.getElementById('clock-status').textContent =
-        `Clocked out – ${res.data.hours_worked} hours worked`;
-
       stopGuardGpsTracking();
+
+      statusElement.textContent =
+        `Clocked out – ${res.data.hours_worked} hours worked.`;
+
       alert(res.message);
+
     } catch (err) {
       alert(err.message);
+
+    } finally {
+      busy = false;
+      await refreshClockStatus();
     }
   };
-}
 
+  await refreshClockStatus();
+}
 // ---------- Boot ----------
 (async function init() {
   if (token) {
@@ -3344,6 +3761,9 @@ async function renderClock(el) {
     }
   }
 })();
+
+
+
 
 
 

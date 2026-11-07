@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../config/db');
 const { authenticate, authorize } = require('../middleware/auth');
+const { publishShiftChange } = require('../services/realtime');
 
 const router = express.Router();
 
@@ -254,6 +255,12 @@ router.post('/generate', authenticate, authorize('admin', 'manager'), async (req
     await connection.commit();
     transactionStarted = false;
 
+    publishShiftChange({
+      guard_id: guardId,
+      action: 'generated',
+      total_shifts: insertedCount
+    });
+
     return res.status(201).json({
       success: true,
       message: `Generated ${insertedCount} shifts (${cycleCount} cycle(s)).`,
@@ -405,6 +412,12 @@ router.post('/manual', authenticate, authorize('admin', 'manager'), async (req, 
     await connection.commit();
     transactionStarted = false;
 
+    publishShiftChange({
+      guard_id: guardId,
+      action: 'manual',
+      total_shifts: 1
+    });
+
     return res.status(201).json({
       success: true,
       message: 'Manual shift assigned successfully.',
@@ -461,6 +474,7 @@ router.get('/', authenticate, async (req, res) => {
       JOIN users u ON u.id = ss.guard_id
       LEFT JOIN sites s ON s.id = ss.site_id
       WHERE 1=1
+        AND u.is_active = 1
     `;
     const params = [];
 
@@ -809,4 +823,5 @@ router.get(
 
 
 module.exports = router;
+
 
