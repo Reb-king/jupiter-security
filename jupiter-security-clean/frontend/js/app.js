@@ -149,6 +149,43 @@ function stopGuardGpsTracking() {
   console.log('Background GPS tracking stopped.');
 }
 
+async function updateAnnouncementBadge(announcements) {
+  const badge = document.getElementById('announcement-unread-badge');
+
+  if (!badge) return;
+
+  badge.hidden = true;
+  badge.style.display = 'none';
+
+  if (!token || !currentUser || currentUser.role !== 'guard') return;
+
+  try {
+    let currentAnnouncements = announcements;
+
+    if (!Array.isArray(currentAnnouncements)) {
+      const result = await api('/announcements');
+
+      currentAnnouncements = Array.isArray(result.data)
+        ? result.data
+        : [];
+    }
+
+    const unreadCount = currentAnnouncements.filter(
+      item => !Number(item.has_read)
+    ).length;
+
+    if (unreadCount > 0) {
+      badge.textContent = `(${unreadCount})`;
+      badge.hidden = false;
+      badge.style.display = 'inline-flex';
+    } else {
+      badge.textContent = '';
+    }
+
+  } catch (err) {
+    console.error('Failed to update announcement badge:', err);
+  }
+}
 async function api(path, options = {}) {
   const headers = {
     ...(options.headers || {})
@@ -460,6 +497,7 @@ function enterApp() {
   }
 
     startAttendanceRealtime();
+  updateAnnouncementBadge();
   loadPage('dashboard');
 }
 
@@ -503,6 +541,7 @@ async function loadPage(page) {
       case 'payroll': await renderPayroll(content); break;
       case 'incidents': await renderIncidents(content); break;
       case 'clock': await renderClock(content); break;
+      case 'announcements': await renderAnnouncements(content); break;
       case 'password': await renderChangePassword(content); break;
       default: content.innerHTML = '<p>Page not found</p>';
     }
@@ -510,6 +549,323 @@ async function loadPage(page) {
     content.innerHTML =
       `<p class="error">${escapeHTML(err.message)}</p>`;
   }
+}
+
+
+// ---------- Announcements ----------
+async function renderAnnouncements(el) {
+  const isManagement =
+    currentUser.role === 'admin' || currentUser.role === 'manager';
+
+  el.innerHTML = `
+    <h2 style="margin-bottom:1rem">Announcements</h2>
+
+    ${isManagement ? `
+      <div class="card">
+        <h2>Publish Announcement</h2>
+        <form id="announcement-form">
+          <div class="form-group">
+            <label for="announcement-title">Title *</label>
+            <input
+              type="text"
+              id="announcement-title"
+              maxlength="180"
+              required
+              placeholder="Announcement title"
+            >
+          </div>
+
+          <div class="form-group">
+            <label for="announcement-message">Message *</label>
+            <textarea
+              id="announcement-message"
+              maxlength="20000"
+              rows="5"
+              required
+              placeholder="Write the announcement..."
+            ></textarea>
+          </div>
+
+          <div class="form-group">
+            <label for="announcement-expiry">Expiry date and time (optional)</label>
+            <input
+              type="datetime-local"
+              id="announcement-expiry"
+            >
+            <small>Leave blank if the announcement should not expire automatically.</small>
+          </div>
+
+          <p id="announcement-form-message" aria-live="polite"></p>
+          <button type="submit" class="btn" id="announcement-submit">
+            Publish Announcement
+          </button>
+        </form>
+      </div>
+    ` : ''}
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <h2 style="margin-bottom:0">Current Announcements</h2>
+        <button type="button" class="btn" id="announcement-refresh">Refresh</button>
+      </div>
+      <div id="announcement-list" style="margin-top:1rem">
+        <p>Loading announcements...</p>
+      </div>
+    </div>
+  `;
+
+  const listElement = document.getElementById('announcement-list');
+  const refreshButton = document.getElementById('announcement-refresh');
+
+  function formatAnnouncementDate(value) {
+    if (!value) return 'Not specified';
+
+    const date = new Date(`${String(value).replace(' ', 'T')}Z`);
+
+    if (Number.isNaN(date.getTime())) return String(value);
+
+    return new Intl.DateTimeFormat('en-NA', {
+      timeZone: 'Africa/Windhoek',
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    }).format(date);
+  }
+
+  async function loadAnnouncements() {
+    listElement.innerHTML = '<p>Loading announcements...</p>';
+    refreshButton.disabled = true;
+
+    try {
+      const result = await api('/announcements');
+      const announcements = Array.isArray(result.data) ? result.data : [];
+      await updateAnnouncementBadge(announcements);
+
+      if (!announcements.length) {
+        listElement.innerHTML = '<p>There are no current announcements.</p>';
+        return;
+      }
+
+      listElement.innerHTML = announcements.map(item => {
+        const alreadyRead = Boolean(item.has_read);
+
+        return `
+          <article class="card" style="border:1px solid var(--border);margin-top:1rem;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+              <h3 style="margin:0;">${escapeHTML(item.title)}</h3>
+              <strong class="${alreadyRead ? 'status-approved' : 'status-terminated'}">
+                ${alreadyRead ? 'Read' : 'Unread'}
+              </strong>
+            </div>
+
+            <p style="margin-top:0.75rem;white-space:pre-wrap;overflow-wrap:anywhere;">${escapeHTML(item.message)}</p>
+
+            <p style="color:var(--muted);font-size:0.85rem;margin-top:1rem;">
+              Published: ${escapeHTML(formatAnnouncementDate(item.published_at))}
+              <br>
+              Expires: ${escapeHTML(formatAnnouncementDate(item.expires_at))}
+              <br>
+              Published by: ${escapeHTML(item.created_by_name || 'Management')}
+            </p>
+
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:0.75rem;">
+              ${!alreadyRead ? `
+                <button type="button" class="btn-success" data-announcement-read="${Number(item.id)}">
+                  Mark as Read
+                </button>
+              ` : ''}
+
+              ${isManagement ? `
+                <button type="button" class="btn" data-announcement-readers="${Number(item.id)}">
+                  View Readership
+                </button>
+              ` : ''}
+            </div>
+
+            ${isManagement ? `
+              <div id="announcement-readers-${Number(item.id)}" style="margin-top:1rem;"></div>
+            ` : ''}
+          </article>
+        `;
+      }).join('');
+
+      listElement.querySelectorAll('[data-announcement-read]').forEach(button => {
+        button.addEventListener('click', async () => {
+          const id = button.dataset.announcementRead;
+          button.disabled = true;
+
+          try {
+            const response = await api(`/announcements/${id}/read`, {
+              method: 'POST'
+            });
+
+            alert(response.message || 'Announcement marked as read.');
+            await loadAnnouncements();
+          } catch (err) {
+            button.disabled = false;
+            alert(`Could not mark announcement as read: ${err.message}`);
+          }
+        });
+      });
+
+      if (isManagement) {
+        listElement.querySelectorAll('[data-announcement-readers]').forEach(button => {
+          button.addEventListener('click', async () => {
+            const id = button.dataset.announcementReaders;
+            const target = document.getElementById(`announcement-readers-${id}`);
+
+            button.disabled = true;
+            target.innerHTML = '<p>Loading readership...</p>';
+
+            try {
+              const response = await api(`/announcements/${id}/readers`);
+              const data = response.data;
+              const readers = Array.isArray(data.readers) ? data.readers : [];
+
+              target.innerHTML = `
+                <h4>Readership: ${escapeHTML(data.announcement.title)}</h4>
+
+                <div style="display:flex;gap:12px;flex-wrap:wrap;margin:0.75rem 0;">
+                  <span>Total Guards: <strong>${Number(data.total_guards)}</strong></span>
+                  <span>Read: <strong>${Number(data.read_count)}</strong></span>
+                  <span style="color:var(--danger,#dc2626);">
+                    Unread: <strong>${Number(data.unread_count)}</strong>
+                  </span>
+                </div>
+
+                <div class="form-group" style="margin:0.75rem 0;">
+                  <label for="announcement-reader-search-${Number(id)}">
+                    Search by guard name or employee code
+                  </label>
+                  <input
+                    type="search"
+                    id="announcement-reader-search-${Number(id)}"
+                    placeholder="Enter guard name or employee code..."
+                    autocomplete="off"
+                  >
+                </div>
+
+                <p id="announcement-reader-results-${Number(id)}"
+                   style="font-size:0.85rem;color:var(--muted);margin-bottom:0.5rem;">
+                  Showing ${readers.length} of ${readers.length} guards
+                </p>
+
+                <div style="overflow-x:auto;">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Guard</th>
+                        <th>Employee Code</th>
+                        <th>Account</th>
+                        <th>Read Status</th>
+                        <th>Read At</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${readers.length ? readers.map(guard => `
+                        <tr data-reader-row>
+                          <td>${escapeHTML(guard.full_name)}</td>
+                          <td>${escapeHTML(guard.employee_code)}</td>
+                          <td>${Number(guard.is_active) === 1 ? 'Active' : 'Inactive'}</td>
+                          <td>${guard.read_at ? 'Read' : 'Unread'}</td>
+                          <td>${guard.read_at ? escapeHTML(formatAnnouncementDate(guard.read_at)) : '—'}</td>
+                        </tr>
+                      `).join('') : `
+                        <tr><td colspan="5">No guard accounts found.</td></tr>
+                      `}
+                    </tbody>
+                  </table>
+                </div>
+              `;
+
+              const searchInput = target.querySelector(
+                '[id="announcement-reader-search-' + Number(id) + '"]'
+              );
+
+              const readerRows = Array.from(
+                target.querySelectorAll('[data-reader-row]')
+              );
+
+              const resultCount = target.querySelector(
+                '[id="announcement-reader-results-' + Number(id) + '"]'
+              );
+
+              if (searchInput && resultCount) {
+                searchInput.addEventListener('input', () => {
+                  const query = searchInput.value.trim().toLowerCase();
+                  let visibleCount = 0;
+
+                  readerRows.forEach(row => {
+                    const matches = row.textContent.toLowerCase().includes(query);
+
+                    row.style.display = matches ? '' : 'none';
+
+                    if (matches) visibleCount++;
+                  });
+
+                  resultCount.textContent =
+                    'Showing ' + visibleCount + ' of ' + readerRows.length + ' guards';
+                });
+              }
+            } catch (err) {
+              target.innerHTML = `<p class="error">${escapeHTML(err.message)}</p>`;
+            } finally {
+              button.disabled = false;
+            }
+          });
+        });
+      }
+    } catch (err) {
+      listElement.innerHTML =
+        `<p class="error">${escapeHTML(err.message)}</p>`;
+    } finally {
+      refreshButton.disabled = false;
+    }
+  }
+
+  refreshButton.addEventListener('click', loadAnnouncements);
+
+  if (isManagement) {
+    const form = document.getElementById('announcement-form');
+    const messageElement = document.getElementById('announcement-form-message');
+    const submitButton = document.getElementById('announcement-submit');
+
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+
+      messageElement.textContent = '';
+      submitButton.disabled = true;
+      submitButton.textContent = 'Publishing...';
+
+      try {
+        const title = document.getElementById('announcement-title').value.trim();
+        const message = document.getElementById('announcement-message').value.trim();
+        const expiresAt = document.getElementById('announcement-expiry').value;
+
+        const result = await api('/announcements', {
+          method: 'POST',
+          body: JSON.stringify({
+            title,
+            message,
+            expires_at: expiresAt || ''
+          })
+        });
+
+        messageElement.textContent =
+          result.message || 'Announcement published successfully.';
+
+        form.reset();
+        await loadAnnouncements();
+      } catch (err) {
+        messageElement.textContent = err.message;
+        messageElement.className = 'error';
+      } finally {
+        submitButton.disabled = false;
+        submitButton.textContent = 'Publish Announcement';
+      }
+    });
+  }
+
+  await loadAnnouncements();
 }
 
 // ---------- Change Password ----------
@@ -720,8 +1076,8 @@ async function renderGuards(el) {
         <input id="g-phone" placeholder="Phone (+264...)" required />
         <input id="g-email" type="email"
           placeholder="Email Address (Optional)" />
-        <input id="g-dob" type="date" title="Date of Birth" />
-        <input id="g-hired" type="date" title="Date Hired" />
+        <input id="g-dob" type="date" title="Date of Birth - Select the guard's date of birth (DD/MM/YYYY)" />
+        <input id="g-hired" type="date" title="Date Hired - Select the date the guard officially joined Jupiter Security (DD/MM/YYYY)" />
         <input id="g-rate" type="number" step="0.01" min="0"
           placeholder="Hourly Rate (NAD)" />
         <button class="btn" id="btn-add-guard" type="button">
@@ -816,8 +1172,8 @@ async function renderGuards(el) {
           <td>${escapeHTML(guard.full_name)}</td>
           <td>${escapeHTML(guard.phone || '-')}</td>
           <td>${escapeHTML(guard.email || '-')}</td>
-          <td>${escapeHTML(dateOnly(guard.date_of_birth))}</td>
-          <td>${escapeHTML(dateOnly(guard.hired_at))}</td>
+          <td title="${escapeHTML(dateOnly(guard.date_of_birth))}">${escapeHTML(dateOnly(guard.date_of_birth))}</td>
+          <td title="${escapeHTML(dateOnly(guard.hired_at))}">${escapeHTML(dateOnly(guard.hired_at))}</td>
           <td>${formatNAD(guard.hourly_rate)}</td>
           <td>${active
             ? '<span class="status-on">Active</span>'
@@ -907,7 +1263,14 @@ async function renderGuards(el) {
         })
       });
 
-      if (res.data.email_sent) {
+      if (res.data.email_sent && res.data.used_company_fallback) {
+        alert(
+          `Guard registered successfully!\n\nEmployee Code: ${res.data.employee_code}\n` +
+          `Temporary Password: ${res.data.temp_password}\n\n` +
+          `Login details emailed to the company notification address: ${res.data.notification_email}\n\n` +
+          `Please provide these login details securely to the guard.`
+        );
+      } else if (res.data.email_sent) {
         alert(
           `Guard registered successfully!\n\nEmployee Code: ${res.data.employee_code}\n` +
           `Login details emailed to: ${res.data.email}\n\n` +
@@ -917,6 +1280,7 @@ async function renderGuards(el) {
         alert(
           `Guard account created successfully.\n\nEmployee Code: ${res.data.employee_code}\n` +
           `Email Address: ${res.data.email || 'Not provided'}\n` +
+          `Notification Email: ${res.data.notification_email || 'Not available'}\n` +
           `Temporary Password: ${res.data.temp_password}\n\n` +
           `Please provide these login details securely to the guard.`
         );
@@ -1620,9 +1984,13 @@ async function renderShifts(el) {
 
       ${isManager ? `
         <div class="form-row">
-          <input type="search" id="sh-guard-search"
-  placeholder="Search guard by name or employee code..."
-  aria-label="Search guards for shift generation" />
+          <div style="display:flex;flex-direction:column;gap:5px;flex:0 1 300px;min-width:min(260px, 100%);max-width:100%;">
+            <label for="sh-guard-search" style="font-size:13px;font-weight:600;color:var(--text);">Search Guard Name</label>
+            <input type="search" id="sh-guard-search"
+              placeholder="Type guard name or employee code..."
+              aria-label="Search guards for shift generation"
+              style="width:100%;box-sizing:border-box;" />
+          </div>
 <select id="sh-guard">
             <option value="">All Guards</option>
             ${guards.map(g => `
@@ -1655,9 +2023,15 @@ async function renderShifts(el) {
         <div class="form-row" style="align-items:center;gap:12px;flex-wrap:wrap;">
           <strong style="flex-basis:100%;">Manual Shift Assignment</strong>
 
-          <input type="search" id="sh-manual-guard-search"
-  placeholder="Search guard by name or employee code..."
-  aria-label="Search guards for manual shift assignment" />
+          <div style="display:flex;flex-direction:column;gap:5px;flex:0 1 300px;min-width:min(260px, 100%);max-width:100%;">
+            <label for="sh-manual-guard-search" style="font-size:13px;font-weight:600;color:var(--text);">
+              Search Guard Name
+            </label>
+            <input type="search" id="sh-manual-guard-search"
+              placeholder="Type guard name or employee code..."
+              aria-label="Search guards for manual shift assignment"
+              style="width:100%;box-sizing:border-box;" />
+          </div>
 <select id="sh-manual-guard" required>
             <option value="">Select Guard</option>
             ${guards.map(g => `
@@ -1690,16 +2064,29 @@ async function renderShifts(el) {
         </div>
 
         <p id="sh-manual-message" aria-live="polite"></p>
-        <div class="form-row" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-          <input id="sh-search" type="search" style="flex:1 1 560px;width:100%;min-width:min(360px, 100%);max-width:100%;box-sizing:border-box;"
-            placeholder="Search by guard name or employee code..."
-            aria-label="Search shifts by guard" />
-          <input type="date" id="sh-date-search" style="flex:0 1 180px;min-width:160px;"
-            aria-label="Search shifts by date" title="Filter shifts by date" />
-          <label>
-            <input type="checkbox" id="sh-show-old" />
-            Show older shifts
-          </label>
+        <div style="display:flex;flex-direction:column;gap:5px;width:100%;margin:16px 0;">
+          <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:300px;flex:none;">
+            <label for="sh-search"
+              style="font-size:13px;font-weight:600;color:var(--text);">
+              Search Created Shifts
+            </label>
+            <input id="sh-search" type="search"
+              style="width:100%;min-width:0;max-width:100%;box-sizing:border-box;"
+              placeholder="Type guard name or employee code..."
+              aria-label="Search shifts by guard" />
+          </div>
+
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <input type="date" id="sh-date-search"
+              style="flex:0 1 260px;min-width:240px;width:100%;"
+              aria-label="Search shifts by date"
+              title="Select the shift date to filter created shifts." />
+
+            <label>
+              <input type="checkbox" id="sh-show-old" />
+              Show older shifts
+            </label>
+          </div>
         </div>
       ` : ''}
 
@@ -1817,6 +2204,8 @@ ${isManager ? `
       node => node.classList.contains('form-row')
     );
 
+    const scheduleSearch = shiftCard.querySelector('#sh-search')?.parentElement?.parentElement;
+
     const scheduleCount = shiftCard.querySelector('#sh-count');
     const scheduleTable = shiftCard.querySelector('#sh-rows').parentElement;
 
@@ -1834,6 +2223,7 @@ ${isManager ? `
     [
       scheduleHeading,
       ...scheduleControls,
+      scheduleSearch,
       scheduleCount,
       scheduleTable
     ].forEach(node => {
@@ -2542,7 +2932,7 @@ async function renderLocation(el) {
 
       <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
         <span>🟢 On Duty</span>
-        <span>🔴 Off Duty</span>
+
         <span>🔵 My Location</span>
       </div>
 
@@ -2592,6 +2982,8 @@ async function renderLocation(el) {
   // Prevent automatic guard refresh from moving away
   // after the user has selected My Location.
   let userHasCenteredMap = false;
+  let liveOnDutyCount = 0;
+  let latestOnDutyBounds = [];
 
   const myLocationButton =
     document.getElementById('my-location-button');
@@ -2679,10 +3071,49 @@ async function renderLocation(el) {
 
         // Display the coordinates on the page.
         myLocationCoordinates.innerHTML = `
-          <strong>Latitude:</strong> ${latitude.toFixed(6)}<br>
-          <strong>Longitude:</strong> ${longitude.toFixed(6)}<br>
-          <strong>GPS Accuracy:</strong> ±${Math.round(accuracy)} metres
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
+            <span><strong>Latitude:</strong> ${latitude.toFixed(6)}</span>
+            <button type="button" id="live-location-on-duty-count"
+              style="font:inherit;font-weight:700;color:#15803d;cursor:pointer;border:0;background:transparent;padding:0;text-align:left">
+              🟢 Currently On Duty: ${liveOnDutyCount}
+            </button>
+          </div>
+          <div><strong>Longitude:</strong> ${longitude.toFixed(6)}</div>
+          <div><strong>GPS Accuracy:</strong> ±${Math.round(accuracy)} metres</div>
         `;
+
+        const onDutyDisplay =
+          document.getElementById('live-location-on-duty-count');
+
+        if (onDutyDisplay) {
+          onDutyDisplay.addEventListener('click', () => {
+            if (latestOnDutyBounds.length === 0) {
+              myLocationStatus.textContent =
+                'No on-duty guards currently have valid GPS coordinates.';
+              return;
+            }
+
+            userHasCenteredMap = true;
+
+            if (latestOnDutyBounds.length === 1) {
+              jupiterLiveLocationMap.setView(
+                latestOnDutyBounds[0],
+                15
+              );
+            } else {
+              jupiterLiveLocationMap.fitBounds(
+                latestOnDutyBounds,
+                {
+                  padding: [50, 50],
+                  maxZoom: 15
+                }
+              );
+            }
+
+            myLocationStatus.textContent =
+              `Showing GPS locations of ${latestOnDutyBounds.length} on-duty guard(s).`;
+          });
+        }
 
         myLocationStatus.textContent =
           'Your current GPS position is displayed on the map.';
@@ -2739,6 +3170,7 @@ async function renderLocation(el) {
       jupiterLiveLocationMarkers.clearLayers();
 
       const bounds = [];
+      const onDutyBounds = [];
       let onDutyCount = 0;
       let validGpsCount = 0;
       let missingGpsCount = 0;
@@ -2780,6 +3212,10 @@ async function renderLocation(el) {
 
         validGpsCount++;
 
+        if (onDuty) {
+          onDutyBounds.push([latitude, longitude]);
+        }
+
         const marker = L.circleMarker([latitude, longitude], {
           radius: 9,
           color: onDuty ? '#15803d' : '#b91c1c',
@@ -2805,6 +3241,20 @@ async function renderLocation(el) {
         bounds.push([latitude, longitude]);
       });
 
+      // Save the latest on-duty GPS positions.
+      latestOnDutyBounds = onDutyBounds;
+
+      // Update the current on-duty count.
+      liveOnDutyCount = onDutyCount;
+
+      const onDutyDisplay =
+        document.getElementById('live-location-on-duty-count');
+
+      if (onDutyDisplay) {
+        onDutyDisplay.textContent =
+          `🟢 Currently On Duty: ${liveOnDutyCount}`;
+      }
+
       const status =
         document.getElementById('live-location-status');
 
@@ -2827,6 +3277,7 @@ async function renderLocation(el) {
 
     } catch (err) {
       console.error('Live location refresh failed:', err);
+
 
       const status =
         document.getElementById('live-location-status');
