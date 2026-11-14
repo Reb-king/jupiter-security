@@ -936,3 +936,39 @@ table {
 .guard-date-field.has-value input {
   color: var(--text);
 }
+
+
+/* SHIFTS MOBILE SEARCH AND DATE IMPROVEMENTS */
+@media (max-width: 700px) {
+  .shifts-guard-search-wrap {
+    flex: 0 0 auto !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+  }
+
+  .shifts-guard-search-wrap input {
+    width: 100% !important;
+    box-sizing: border-box;
+    margin: 0 !important;
+  }
+
+  .shifts-guard-filter-row #sh-guard,
+  .shifts-manual-assignment-row #sh-manual-guard {
+    width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box;
+    margin: 0 !important;
+  }
+
+  .shifts-guard-filter-row,
+  .shifts-manual-assignment-row {
+    row-gap: 4px !important;
+  }
+
+  .shifts-generator-date-field {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+}

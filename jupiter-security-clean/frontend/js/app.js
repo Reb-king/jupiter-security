@@ -1998,7 +1998,7 @@ async function renderShifts(el) {
 
       ${isManager ? `
         <div class="form-row shifts-guard-filter-row">
-          <div style="display:flex;flex-direction:column;gap:5px;flex:0 1 300px;min-width:min(260px, 100%);max-width:100%;">
+          <div class="shifts-guard-search-wrap" style="display:flex;flex-direction:column;gap:5px;flex:0 1 300px;min-width:min(260px, 100%);max-width:100%;">
             <label for="sh-guard-search" style="font-size:13px;font-weight:600;color:var(--text);">Search Guard Name</label>
             <input type="search" id="sh-guard-search"
               placeholder="Type guard name or employee code..."
@@ -2023,7 +2023,7 @@ async function renderShifts(el) {
             `).join('')}
           </select>
 
-          <input type="date" id="sh-start" />
+          <div class="shift-date-field shifts-generator-date-field"><span aria-hidden="true">Select Date</span><input type="date" id="sh-start" aria-label="Select Date" title="Select the starting date for the 7 Day, 7 Night, 1 Off shift cycle." /></div>
 
           <input type="number" id="sh-cycles" value="1"
             min="1" max="12" style="width:80px"
@@ -2037,7 +2037,7 @@ async function renderShifts(el) {
         <div class="form-row shifts-manual-assignment-row" style="align-items:center;gap:12px;flex-wrap:wrap;">
           <strong style="flex-basis:100%;">Manual Shift Assignment</strong>
 
-          <div style="display:flex;flex-direction:column;gap:5px;flex:0 1 300px;min-width:min(260px, 100%);max-width:100%;">
+          <div class="shifts-guard-search-wrap" style="display:flex;flex-direction:column;gap:5px;flex:0 1 300px;min-width:min(260px, 100%);max-width:100%;">
             <label for="sh-manual-guard-search" style="font-size:13px;font-weight:600;color:var(--text);">
               Search Guard Name
             </label>
