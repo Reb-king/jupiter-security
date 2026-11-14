@@ -972,3 +972,32 @@ table {
     min-width: 0 !important;
   }
 }
+/* GUARDS MOBILE REGISTRATION FIELD SPACING */
+@media (max-width: 700px) {
+  .form-row:has(#g-email) {
+    gap: 5px !important;
+    row-gap: 5px !important;
+    margin-bottom: 0.5rem;
+  }
+
+  .form-row:has(#g-email) > input,
+  .form-row:has(#g-email) > .guard-date-field {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    flex: 0 0 100% !important;
+    margin: 0 !important;
+    box-sizing: border-box;
+  }
+
+  .form-row:has(#g-email) > .guard-date-field {
+    display: flex;
+  }
+
+  .form-row:has(#g-email) > .guard-date-field input {
+    width: 100% !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    box-sizing: border-box;
+  }
+}
