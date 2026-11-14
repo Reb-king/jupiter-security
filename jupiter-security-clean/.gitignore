@@ -20,3 +20,6 @@ pnpm-debug.log*
 *.bak*
 *.before-step*
 *-backup*
+
+# Local backup directory
+/backups/
