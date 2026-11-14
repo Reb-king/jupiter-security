@@ -818,3 +818,121 @@ table {
 
 /* END JUPITER COMPANY WATERMARK */
 
+
+/* Incident Reports: responsive guard cards grid */
+.incident-guards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+    gap: 16px;
+    width: 100%;
+    align-items: start;
+}
+
+.incident-guards-grid > .incident-guard-group {
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    margin-right: 0;
+    min-width: 0;
+}
+
+.incident-guards-grid .incident-guard-group > button {
+    width: 100%;
+}
+
+@media (max-width: 600px) {
+    .incident-guards-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+/* End Incident Reports guard cards grid */
+
+/* Shifts date fields: show a helpful label inside an empty native date picker. */
+.shift-date-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.shift-date-field > span {
+  position: absolute;
+  left: 12px;
+  z-index: 1;
+  color: var(--muted, #777);
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+
+.shift-date-field input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  color: transparent;
+}
+
+.shift-date-field:focus-within > span,
+.shift-date-field.has-value > span {
+  display: none;
+}
+
+.shift-date-field:focus-within input,
+.shift-date-field.has-value input {
+  color: var(--text);
+}
+
+/* Shifts: reduce spacing between guard search and selector on phones. */
+@media (max-width: 700px) {
+  .shifts-guard-filter-row {
+    gap: 0.25rem;
+    margin-bottom: 0.45rem;
+  }
+
+  .shifts-manual-assignment-row {
+    gap: 0.25rem !important;
+    margin-bottom: 0.45rem;
+  }
+
+  .shift-date-filter-field {
+    flex: 1 1 100% !important;
+    min-width: 0 !important;
+  }
+}
+
+/* Guards: helpful labels inside empty native date fields. */
+.guard-date-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.guard-date-field > span {
+  position: absolute;
+  left: 12px;
+  z-index: 1;
+  color: var(--muted, #777);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.guard-date-field input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  color: transparent;
+}
+
+.guard-date-field:focus-within > span,
+.guard-date-field.has-value > span {
+  display: none;
+}
+
+.guard-date-field:focus-within input,
+.guard-date-field.has-value input {
+  color: var(--text);
+}

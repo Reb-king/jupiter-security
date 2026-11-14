@@ -1076,8 +1076,8 @@ async function renderGuards(el) {
         <input id="g-phone" placeholder="Phone (+264...)" required />
         <input id="g-email" type="email"
           placeholder="Email Address (Optional)" />
-        <input id="g-dob" type="date" title="Date of Birth - Select the guard's date of birth (DD/MM/YYYY)" />
-        <input id="g-hired" type="date" title="Date Hired - Select the date the guard officially joined Jupiter Security (DD/MM/YYYY)" />
+        <div class="guard-date-field"><span aria-hidden="true">Select Date of Birth</span><input id="g-dob" type="date" title="Date of Birth - Select the guard's date of birth (DD/MM/YYYY)" aria-label="Select Date of Birth" /></div>
+        <div class="guard-date-field"><span aria-hidden="true">Select Date Hired</span><input id="g-hired" type="date" title="Date Hired - Select the date the guard officially joined Jupiter Security (DD/MM/YYYY)" aria-label="Select Date Hired" /></div>
         <input id="g-rate" type="number" step="0.01" min="0"
           placeholder="Hourly Rate (NAD)" />
         <button class="btn" id="btn-add-guard" type="button">
@@ -1111,6 +1111,20 @@ async function renderGuards(el) {
       </div>
     </div>
   `;
+
+  // Keep helpful labels visible inside empty Guards date fields.
+  el.querySelectorAll('.guard-date-field input[type="date"]').forEach(input => {
+    const wrapper = input.closest('.guard-date-field');
+
+    const updateDateLabel = () => {
+      wrapper.classList.toggle('has-value', Boolean(input.value));
+    };
+
+    input.addEventListener('change', updateDateLabel);
+    input.addEventListener('input', updateDateLabel);
+
+    updateDateLabel();
+  });
 
   const searchInput = document.getElementById('guard-search');
   const tbody = document.getElementById('guards-table-body');
@@ -1983,7 +1997,7 @@ async function renderShifts(el) {
       <h2 style="margin-top:0;">Shifts ${isManager ? '(7 Day → 7 Night → 1 Off)' : ''}</h2>
 
       ${isManager ? `
-        <div class="form-row">
+        <div class="form-row shifts-guard-filter-row">
           <div style="display:flex;flex-direction:column;gap:5px;flex:0 1 300px;min-width:min(260px, 100%);max-width:100%;">
             <label for="sh-guard-search" style="font-size:13px;font-weight:600;color:var(--text);">Search Guard Name</label>
             <input type="search" id="sh-guard-search"
@@ -2020,7 +2034,7 @@ async function renderShifts(el) {
           </button>
         </div>
 
-        <div class="form-row" style="align-items:center;gap:12px;flex-wrap:wrap;">
+        <div class="form-row shifts-manual-assignment-row" style="align-items:center;gap:12px;flex-wrap:wrap;">
           <strong style="flex-basis:100%;">Manual Shift Assignment</strong>
 
           <div style="display:flex;flex-direction:column;gap:5px;flex:0 1 300px;min-width:min(260px, 100%);max-width:100%;">
@@ -2050,7 +2064,7 @@ async function renderShifts(el) {
             `).join('')}
           </select>
 
-          <input type="date" id="sh-manual-date" required />
+          <div class="shift-date-field"><span aria-hidden="true">Select Shift Date</span><input type="date" id="sh-manual-date" required aria-label="Select Shift Date" /></div>
 
           <select id="sh-manual-type" required>
             <option value="">Select Shift</option>
@@ -2077,10 +2091,7 @@ async function renderShifts(el) {
           </div>
 
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-            <input type="date" id="sh-date-search"
-              style="flex:0 1 260px;min-width:240px;width:100%;"
-              aria-label="Search shifts by date"
-              title="Select the shift date to filter created shifts." />
+            <div class="shift-date-field shift-date-filter-field"><span aria-hidden="true">Select Shift Date</span><input type="date" id="sh-date-search" style="width:100%;min-width:0;box-sizing:border-box;" aria-label="Select Shift Date" title="Select the shift date to filter created shifts." /></div>
 
             <label>
               <input type="checkbox" id="sh-show-old" />
@@ -2147,6 +2158,12 @@ ${isManager ? `
       </div>
 
       <p id="sh-missing-message" aria-live="polite"></p>
+      <div id="sh-missing-search-wrap" hidden style="margin:12px 0;">
+        <input id="sh-missing-search" type="search"
+          placeholder="Search guard name or employee code..."
+          aria-label="Search missing guards by name or employee code"
+          style="width:100%;max-width:420px;box-sizing:border-box;" />
+      </div>
       <div id="sh-missing-guard-list" style="margin-top:12px;"></div>
       <button class="btn" id="sh-missing-back" type="button" hidden style="margin:8px 0;">Back to guard list</button>
 
@@ -2190,6 +2207,17 @@ ${isManager ? `
   `;
 
   
+  // Keep the date-field labels visible only while their date is empty.
+  el.querySelectorAll('.shift-date-field input[type="date"]').forEach(input => {
+    const wrapper = input.closest('.shift-date-field');
+    const updateDateLabel = () => {
+      wrapper.classList.toggle('has-value', Boolean(input.value));
+    };
+
+    input.addEventListener('input', updateDateLabel);
+    input.addEventListener('change', updateDateLabel);
+    updateDateLabel();
+  });
   // Organize the Shifts page into three selectable sections.
   if (isManager) {
     const shiftCard = el.querySelector('.card');
@@ -2573,6 +2601,8 @@ async function loadMissingShiftReport() {
   const guardList = document.getElementById('sh-missing-guard-list');
   const detailWrap = document.getElementById('sh-missing-detail-wrap');
   const backButton = document.getElementById('sh-missing-back');
+  const missingSearchWrap = document.getElementById('sh-missing-search-wrap');
+  const missingSearchInput = document.getElementById('sh-missing-search');
   if (!rowsElement || !messageElement || !daysInput || !guardList || !detailWrap) return;
   const days = Number(daysInput.value);
   if (![15, 30].includes(days)) { messageElement.textContent = 'Please select 15 or 30 days.'; return; }
@@ -2609,7 +2639,59 @@ async function loadMissingShiftReport() {
       if (!guardsById.has(key)) guardsById.set(key, {key, guard: row, dates: new Set()});
       guardsById.get(key).dates.add(row.report_date);
     });
-    const guardItems = [...guardsById.values()].sort((a,b) => String(a.guard.full_name||'').localeCompare(String(b.guard.full_name||'')));
+    // Rank guards by missing working days, highest first.
+    const guardItems = [...guardsById.values()].sort((a, b) =>
+      b.dates.size - a.dates.size ||
+      String(a.guard.full_name || '').localeCompare(String(b.guard.full_name || ''))
+    );
+
+    // Render and filter the existing report results.
+    const renderMissingGuardList = () => {
+      const query = String(missingSearchInput?.value || '').trim().toLowerCase();
+
+      const filteredItems = guardItems
+        .map((item, index) => ({ item, index }))
+        .filter(({ item }) => {
+          const name = String(item.guard.full_name || '').toLowerCase();
+          const code = String(item.guard.employee_code || '').toLowerCase();
+          return name.includes(query) || code.includes(query);
+        });
+
+      if (!filteredItems.length) {
+        guardList.innerHTML = '<p>No missing guards match your search.</p>';
+        return;
+      }
+
+      guardList.innerHTML = `
+        <p>Showing ${filteredItems.length} of ${guardItems.length} guards.
+        Ordered by highest number of missing working days.</p>
+        <ul style="list-style:none;padding:0;margin:0;display:grid;gap:8px;">
+          ${filteredItems.map(({ item, index }) => `
+            <li style="padding:10px 12px;border:1px solid var(--border, #ddd);border-radius:8px;">
+              <button type="button" class="btn btn-missing-guard"
+                data-guard-index="${index}"
+                style="text-align:left;font-weight:700;">
+                ${escapeHTML(item.guard.full_name || item.guard.employee_code || 'Unknown guard')}
+              </button>
+              <span style="margin-left:8px;">
+                (${escapeHTML(item.guard.employee_code || 'No employee code')})
+                — <strong>${item.dates.size}</strong> missing working day(s)
+              </span>
+            </li>
+          `).join('')}
+        </ul>
+      `;
+
+      guardList.querySelectorAll('.btn-missing-guard').forEach(button => {
+        button.addEventListener('click', () => {
+          showGuardSchedule(guardItems[Number(button.dataset.guardIndex)]);
+        });
+      });
+    };
+
+    if (missingSearchInput) {
+      missingSearchInput.oninput = renderMissingGuardList;
+    }
     const showGuardSchedule = item => {
       const guard = item.guard;
       const guardId = String(guard.guard_id ?? guard.id ?? '');
@@ -2636,6 +2718,7 @@ async function loadMissingShiftReport() {
       reportRows.forEach(row => rowsByDate.set(row.report_date, { ...(rowsByDate.get(row.report_date) || {}), ...row }));
       const detailRows = [...rowsByDate.values()].sort((a,b) => a.report_date.localeCompare(b.report_date));
       guardList.hidden = true;
+      if (missingSearchWrap) missingSearchWrap.hidden = true;
       detailWrap.hidden = false;
       if (backButton) backButton.hidden = false;
       rowsElement.innerHTML = detailRows.map(row => `<tr>
@@ -2646,13 +2729,26 @@ async function loadMissingShiftReport() {
       </tr>`).join('') || '<tr><td colspan="8">No schedule rows found for this guard in the selected period.</td></tr>';
       messageElement.textContent = `${guard.full_name || employeeCode || 'Guard'} — schedule for ${dates[0]} to ${dates[dates.length-1]}.`;
     };
+    if (missingSearchInput) missingSearchInput.value = '';
+
+    if (missingSearchWrap) {
+      missingSearchWrap.hidden = !guardItems.length;
+    }
+
     if (!guardItems.length) {
       guardList.innerHTML = '<p>No guards without a site assignment were found on working days in this period.</p>';
     } else {
-      guardList.innerHTML = `<p>Select a guard to view their full ${days}-day schedule.</p><ul style="list-style:none;padding:0;margin:0;display:grid;gap:8px;">${guardItems.map((item,index) => `<li style="padding:10px 12px;border:1px solid var(--border, #ddd);border-radius:8px;"><button type="button" class="btn btn-missing-guard" data-guard-index="${index}" style="text-align:left;font-weight:700;">${escapeHTML(item.guard.full_name || item.guard.employee_code || 'Unknown guard')}</button> <span style="margin-left:8px;">(${escapeHTML(item.guard.employee_code || 'No employee code')}) — ${item.dates.size} unassigned working day(s)</span></li>`).join('')}</ul>`;
-      guardList.querySelectorAll('.btn-missing-guard').forEach(button => button.addEventListener('click', () => showGuardSchedule(guardItems[Number(button.dataset.guardIndex)])));
+      renderMissingGuardList();
     }
-    if (backButton) backButton.onclick = () => { detailWrap.hidden = true; guardList.hidden = false; backButton.hidden = true; rowsElement.innerHTML = '<tr><td colspan="8">Select a guard from the list above.</td></tr>'; messageElement.textContent = `${guardItems.length} guard(s) have at least one unassigned working day. Report period: ${dates[0]} to ${dates[dates.length-1]}.`; };
+    if (backButton) backButton.onclick = () => {
+      detailWrap.hidden = true;
+      guardList.hidden = false;
+      if (missingSearchWrap) missingSearchWrap.hidden = false;
+      backButton.hidden = true;
+      renderMissingGuardList();
+      rowsElement.innerHTML = '<tr><td colspan="8">Select a guard from the list above to view their schedule.</td></tr>';
+      messageElement.textContent = `${guardItems.length} guard(s) have at least one unassigned working day. Report period: ${dates[0]} to ${dates[dates.length-1]}.`;
+    };
     rowsElement.innerHTML = '<tr><td colspan="8">Select a guard from the list above to view their schedule.</td></tr>';
     messageElement.textContent = `${guardItems.length} guard(s) have at least one unassigned working day. Report period: ${dates[0]} to ${dates[dates.length-1]}.`;
   } catch (err) {
@@ -3431,11 +3527,28 @@ async function renderIncidents(el) {
 
           <div class="form-group">
             <label for="incident-type">Incident Type *</label>
-            <input type="text" id="incident-type"
-              name="incident_type"
+            <select id="incident-type" name="incident_type" required>
+              <option value="">Select incident type</option>
+              <option value="Theft">Theft</option>
+              <option value="Attempted Theft">Attempted Theft</option>
+              <option value="Burglary / Break-in">Burglary / Break-in</option>
+              <option value="Assault">Assault</option>
+              <option value="Accident / Injury">Accident / Injury</option>
+              <option value="Fire">Fire</option>
+              <option value="Property Damage">Property Damage</option>
+              <option value="Suspicious Activity">Suspicious Activity</option>
+              <option value="Unauthorized Access">Unauthorized Access</option>
+              <option value="Safety Hazard">Safety Hazard</option>
+              <option value="Lost / Found Property">Lost / Found Property</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+
+          <div class="form-group" id="incident-type-other-group" hidden>
+            <label for="incident-type-other">Specify Other Incident Type *</label>
+            <input type="text" id="incident-type-other"
               maxlength="120"
-              placeholder="e.g. Theft, Accident, Suspicious Activity"
-              required>
+              placeholder="Enter the incident type">
           </div>
 
           <div class="form-group">
@@ -3502,6 +3615,20 @@ async function renderIncidents(el) {
     const locationInput = el.querySelector('#incident-location');
     const locationHint = el.querySelector('#incident-location-hint');
 
+    const incidentTypeSelect = el.querySelector('#incident-type');
+    const incidentTypeOtherGroup = el.querySelector('#incident-type-other-group');
+    const incidentTypeOther = el.querySelector('#incident-type-other');
+
+    incidentTypeSelect.addEventListener('change', () => {
+      const isOther = incidentTypeSelect.value === 'Other';
+      incidentTypeOtherGroup.hidden = !isOther;
+      incidentTypeOther.required = isOther;
+
+      if (!isOther) {
+        incidentTypeOther.value = '';
+      }
+    });
+
     api('/incidents/my-location')
       .then(locationResult => {
         const assignedSite = locationResult.data;
@@ -3529,6 +3656,16 @@ async function renderIncidents(el) {
       try {
         const formData = new FormData(form);
 
+        if (incidentTypeSelect.value === 'Other') {
+          const customIncidentType = incidentTypeOther.value.trim();
+
+          if (!customIncidentType || customIncidentType.length > 120) {
+            throw new Error('Please enter an incident type (maximum 120 characters).');
+          }
+
+          formData.set('incident_type', customIncidentType);
+        }
+
         const result = await api('/incidents', {
           method: 'POST',
           body: formData
@@ -3536,6 +3673,9 @@ async function renderIncidents(el) {
 
         message.textContent = result.message || 'Incident report submitted successfully.';
         form.reset();
+        incidentTypeOtherGroup.hidden = true;
+        incidentTypeOther.required = false;
+        incidentTypeOther.value = '';
 
         const currentDate = new Date();
 
@@ -3764,7 +3904,7 @@ async function renderIncidents(el) {
         <p>Select a guard to view their incident reports.</p>
       </div>
 
-      ${reportHTML}
+      <div class="incident-guards-grid">${reportHTML}</div>
     `;
 
     // Search guards by name or employee code.
