@@ -1063,7 +1063,7 @@ async function renderGuards(el) {
           <div class="form-row" style="flex-wrap:wrap;gap:8px;">
             <input id="admin-name" placeholder="Full Name" required />
             <input id="admin-phone" placeholder="Phone (+264...)" required />
-            <input id="admin-email" type="email" placeholder="Email Address" required />
+            <input id="admin-email" type="email" placeholder="Email Address (Optional)" />
             <button class="btn" id="btn-create-admin" type="button">
               Create Administrator
             </button>
@@ -1329,12 +1329,11 @@ async function renderGuards(el) {
       const adminStatus =
         document.getElementById('admin-create-status');
 
-      if (!full_name || !phone || !email) {
-        alert('Please complete all administrator fields.');
+      if (!full_name || !phone) {
+        alert('Please enter the administrator name and phone number.');
         return;
       }
-
-      if (full_name.length > 120) {
+if (full_name.length > 120) {
         alert('Full name cannot exceed 120 characters.');
         return;
       }
@@ -1344,9 +1343,11 @@ async function renderGuards(el) {
         return;
       }
 
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-          email.length > 120) {
-        alert('Please enter a valid email address.');
+      if (email && (
+          !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+          email.length > 120
+      )) {
+        alert('Please enter a valid email address, or leave it blank.');
         return;
       }
 
@@ -1360,7 +1361,7 @@ async function renderGuards(el) {
           body: JSON.stringify({
             full_name,
             phone,
-            email
+            email: email || null
           })
         });
 
@@ -1368,15 +1369,24 @@ async function renderGuards(el) {
         document.getElementById('admin-phone').value = '';
         document.getElementById('admin-email').value = '';
 
-        adminStatus.textContent =
-          'Administrator created successfully. Login details emailed.';
+        const adminData = res.data;
+
+        adminStatus.textContent = adminData.email_sent
+          ? 'Administrator created successfully. Login details emailed.'
+          : 'Administrator created successfully. Email delivery was unsuccessful.';
 
         alert(
           `Administrator created successfully!\n\n` +
-          `Employee Code: ${res.data.employee_code}\n` +
-          `Name: ${res.data.full_name}\n` +
-          `Email: ${res.data.email}\n\n` +
-          `Login details have been emailed to the new administrator.`
+          `Employee Code: ${adminData.employee_code}\n` +
+          `Name: ${adminData.full_name}\n` +
+          `Email: ${adminData.email || 'Not provided'}\n\n` +
+          (adminData.email_sent
+            ? `Login details emailed to: ${adminData.notification_email}\n\n`
+            : `Email delivery failed. Please provide the temporary password securely.\n\n`) +
+          (adminData.temp_password
+            ? `Temporary Password: ${adminData.temp_password}\n\n`
+            : '') +
+          `Please provide login details securely to the administrator.`
         );
 
       } catch (err) {

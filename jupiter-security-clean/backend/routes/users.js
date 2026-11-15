@@ -18,6 +18,127 @@ const mailer = nodemailer.createTransport({
 
 const router = express.Router();
 
+const discardedConnections = new WeakSet();
+
+function discardConnection(connection) {
+  if (!connection) return;
+
+  discardedConnections.add(connection);
+
+  try {
+    connection.destroy();
+  } catch (err) {
+    console.error(
+      'Database connection destroy failed:',
+      err.code || 'Unexpected error'
+    );
+  }
+}
+/**
+ * Generate and insert a user with a role-specific employee code.
+ * MySQL advisory locks prevent simultaneous registrations
+ * from generating the same employee code.
+ */
+async function createUserWithEmployeeCode(connection, role, insertUser) {
+  const sequences = {
+    admin: {
+      prefix: 'JUP-ADMIN-',
+      lock: 'JUP_ADMIN_CODE_LOCK'
+    },
+    manager: {
+      prefix: 'JUP-MD-',
+      lock: 'JUP_MD_CODE_LOCK'
+    },
+    guard: {
+      prefix: 'JUP-',
+      lock: 'JUP_GUARD_CODE_LOCK'
+    }
+  };
+
+  const sequence = sequences[role];
+
+  if (!sequence) {
+    throw new Error('Unsupported employee code role.');
+  }
+
+  const [lockRows] = await connection.query(
+    'SELECT GET_LOCK(?, 15) AS acquired',
+    [sequence.lock]
+  );
+
+  if (Number(lockRows[0].acquired) !== 1) {
+    throw new Error('EMPLOYEE_CODE_LOCK_TIMEOUT');
+  }
+
+  let operationError = null;
+
+  try {
+    const [existingUsers] = await connection.query(
+      `SELECT employee_code
+       FROM users
+       WHERE employee_code LIKE ?`,
+      [`${sequence.prefix}%`]
+    );
+
+    let highestNumber = 0;
+
+    const numberPattern = new RegExp(
+      '^' + sequence.prefix + '(\\d+)$'
+    );
+
+    for (const user of existingUsers) {
+      const match = user.employee_code.match(numberPattern);
+
+      if (match) {
+        highestNumber = Math.max(
+          highestNumber,
+          Number(match[1])
+        );
+      }
+    }
+
+    const employeeCode =
+      sequence.prefix + String(highestNumber + 1).padStart(3, '0');
+
+    const result = await insertUser(employeeCode);
+
+    return {
+      employee_code: employeeCode,
+      result
+    };
+  } catch (err) {
+    operationError = err;
+    throw err;
+  } finally {
+    try {
+      const [releaseRows] = await connection.query(
+        'SELECT RELEASE_LOCK(?) AS released',
+        [sequence.lock]
+      );
+
+      if (Number(releaseRows[0]?.released) !== 1) {
+        const releaseError = new Error(
+          'Employee-code advisory lock could not be released.'
+        );
+
+        releaseError.code = 'EMPLOYEE_CODE_LOCK_RELEASE_FAILED';
+        throw releaseError;
+      }
+    } catch (releaseErr) {
+      discardConnection(connection);
+
+      if (operationError) {
+        console.error(
+          'Employee-code lock release failed after registration error:',
+          releaseErr.code || releaseErr.message
+        );
+      } else {
+        throw releaseErr;
+      }
+    }
+  }
+}
+
 /**
  * Send a temporary password by email.
  * Returns true only when the email provider accepts the message.
@@ -166,6 +287,8 @@ router.post(
   authenticate,
   authorize('admin', 'manager'),
   async (req, res) => {
+    let connection;
+    let transactionStarted = false;
     try {
       const {
         full_name,
@@ -235,55 +358,49 @@ router.post(
       const userRole =
         role && allowedRoles.includes(role) ? role : 'guard';
 
-      // Generate the next automatically generated employee code.
-      const [existingUsers] = await pool.query(
-        `SELECT employee_code
-         FROM users
-         WHERE employee_code REGEXP '^JUP-[0-9]+$'`
-      );
-
-      let highestNumber = 0;
-
-      for (const user of existingUsers) {
-        const match = user.employee_code.match(/^JUP-(\d+)$/);
-
-        if (match) {
-          highestNumber = Math.max(
-            highestNumber,
-            Number(match[1])
-          );
-        }
-      }
-
-      const nextNumber = highestNumber + 1;
-
-      const employee_code =
-        `JUP-${String(nextNumber).padStart(3, '0')}`;
-
-      // Generate a random temporary password.
+            // Generate and hash a random temporary password.
       const tempPassword =
         `Jup-${crypto.randomBytes(12).toString('base64url')}`;
 
       const hash = await bcrypt.hash(tempPassword, 10);
 
-      const [result] = await pool.query(
-        `INSERT INTO users
-          (employee_code, full_name, phone, email, password_hash,
-           role, hourly_rate, is_active, date_of_birth, hired_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-        [
-          employee_code,
-          full_name.trim(),
-          phone.trim(),
-          normalizedEmail,
-          hash,
-          userRole,
-          hourly_rate ?? 0,
-          date_of_birth || null,
-          hired_at || new Date().toISOString().slice(0, 10)
-        ]
-      );
+      connection = await pool.getConnection();
 
+      await connection.beginTransaction();
+      transactionStarted = true;
+
+      const { employee_code, result } =
+        await createUserWithEmployeeCode(
+          connection,
+          userRole,
+          async generatedCode => {
+            const [insertResult] = await connection.query(
+              `INSERT INTO users
+                (employee_code, full_name, phone, email, password_hash,
+                 role, hourly_rate, is_active, date_of_birth, hired_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+              [
+                generatedCode,
+                full_name.trim(),
+                phone.trim(),
+                normalizedEmail,
+                hash,
+                userRole,
+                hourly_rate ?? 0,
+                date_of_birth || null,
+                hired_at || new Date().toISOString().slice(0, 10)
+              ]
+            );
+
+            return insertResult;
+          }
+        );
+
+      await connection.commit();
+      transactionStarted = false;
+
+      connection.release();
+      connection = null;
       let emailSent = false;
 
       // Use the guard's personal email when supplied.
@@ -333,6 +450,34 @@ router.post(
         }
       });
     } catch (err) {
+      if (connection && transactionStarted) {
+        if (discardedConnections.has(connection)) {
+          transactionStarted = false;
+        } else {
+          try {
+            await connection.rollback();
+            transactionStarted = false;
+          } catch (rollbackErr) {
+            console.error(
+              'Registration rollback failed:',
+              rollbackErr.code || 'Unexpected rollback error'
+            );
+
+            discardConnection(connection);
+            transactionStarted = false;
+          }
+        }
+      }
+
+      if (connection) {
+        if (discardedConnections.has(connection)) {
+          connection = null;
+        } else {
+          connection.release();
+          connection = null;
+        }
+      }
+
       if (err.code === 'ER_DUP_ENTRY') {
         return res.status(409).json({
           success: false,
@@ -386,19 +531,32 @@ router.post(
         });
       }
 
-      if (
-        typeof email !== 'string' ||
-        !email.trim() ||
-        email.trim().length > 120 ||
-        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: 'A valid email address is required.'
-        });
+      // Email is optional. Duplicate email addresses are allowed.
+      let normalizedEmail = null;
+
+      if (email !== undefined && email !== null && email !== '') {
+        if (typeof email !== 'string') {
+          return res.status(400).json({
+            success: false,
+            message: 'Email address must be text.'
+          });
+        }
+
+        if (email.trim()) {
+          normalizedEmail = email.trim();
+
+          if (
+            normalizedEmail.length > 120 ||
+            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
+          ) {
+            return res.status(400).json({
+              success: false,
+              message: 'Enter a valid email address.'
+            });
+          }
+        }
       }
 
-      const normalizedEmail = email.trim();
       const normalizedName = full_name.trim();
       const normalizedPhone = phone.trim();
 
@@ -407,86 +565,109 @@ router.post(
       await connection.beginTransaction();
       transactionStarted = true;
 
-      // Generate the next employee code.
-      const [existingUsers] = await connection.query(
-        `SELECT employee_code
-         FROM users
-         WHERE employee_code REGEXP '^JUP-[0-9]+$'
-         FOR UPDATE`
-      );
-
-      let highestNumber = 0;
-
-      for (const user of existingUsers) {
-        const match = user.employee_code.match(/^JUP-(\d+)$/);
-
-        if (match) {
-          highestNumber = Math.max(
-            highestNumber,
-            Number(match[1])
-          );
-        }
-      }
-
-      const employee_code =
-        `JUP-${String(highestNumber + 1).padStart(3, '0')}`;
-
-      // Generate and hash a temporary password.
+            // Generate and hash a temporary password.
       const tempPassword =
         `Jup-${crypto.randomBytes(12).toString('base64url')}`;
 
       const hash = await bcrypt.hash(tempPassword, 10);
 
-      const [result] = await connection.query(
-        `INSERT INTO users
-          (employee_code, full_name, phone, email,
-           password_hash, role, hourly_rate, is_active)
-         VALUES (?, ?, ?, ?, ?, 'admin', 0, 1)`,
-        [
-          employee_code,
-          normalizedName,
-          normalizedPhone,
-          normalizedEmail,
-          hash
-        ]
-      );
+      const { employee_code, result } =
+        await createUserWithEmployeeCode(
+          connection,
+          'admin',
+          async generatedCode => {
+            const [insertResult] = await connection.query(
+              `INSERT INTO users
+                (employee_code, full_name, phone, email,
+                 password_hash, role, hourly_rate, is_active)
+               VALUES (?, ?, ?, ?, ?, 'admin', 0, 1)`,
+              [
+                generatedCode,
+                normalizedName,
+                normalizedPhone,
+                normalizedEmail,
+                hash
+              ]
+            );
 
-      // Require successful email delivery.
-      await sendTemporaryPasswordEmail({
-        email: normalizedEmail,
-        fullName: normalizedName,
-        employeeCode: employee_code,
-        tempPassword,
-        subject: 'Your Jupiter Administrator Login Details',
-        actionDescription: 'has been created'
-      });
+            return insertResult;
+          }
+        );
+      // Use the personal email when supplied, otherwise use the company inbox.
+      const fallbackEmail = 'jupiter.security26@gmail.com';
+      const notificationEmail = normalizedEmail || fallbackEmail;
+      const usedCompanyFallback = !normalizedEmail;
 
+      let emailSent = false;
+
+      try {
+        emailSent = await sendTemporaryPasswordEmail({
+          email: notificationEmail,
+          fullName: normalizedName,
+          employeeCode: employee_code,
+          tempPassword,
+          subject: 'Your Jupiter Administrator Login Details',
+          actionDescription: 'has been created'
+        });
+      } catch (mailError) {
+        console.error(
+          'Administrator registration email failed:',
+          mailError.message
+        );
+      }
+
+      // Email failure must not prevent account creation.
       await connection.commit();
       transactionStarted = false;
 
       return res.status(201).json({
         success: true,
-        message: 'Administrator created and login details emailed successfully.',
+        message: emailSent
+          ? usedCompanyFallback
+            ? 'Administrator created. Login details emailed to the company notification address.'
+            : 'Administrator created and login details emailed successfully.'
+          : 'Administrator created, but email delivery failed. Provide the temporary password securely.',
         data: {
           id: result.insertId,
           employee_code,
           full_name: normalizedName,
           email: normalizedEmail,
           role: 'admin',
-          email_sent: true
+          email_sent: emailSent,
+          notification_email: notificationEmail,
+          used_company_fallback: usedCompanyFallback,
+          ...((usedCompanyFallback || !emailSent)
+            ? { temp_password: tempPassword }
+            : {})
         }
       });
 
     } catch (err) {
       if (connection && transactionStarted) {
-        await connection.rollback();
-        transactionStarted = false;
+        if (discardedConnections.has(connection)) {
+          // Destroying the database session automatically rolls back
+          // any transaction that has not been committed.
+          transactionStarted = false;
+        } else {
+          try {
+            await connection.rollback();
+            transactionStarted = false;
+          } catch (rollbackErr) {
+            console.error(
+              'Administrator registration rollback failed:',
+              rollbackErr.code || 'Unexpected rollback error'
+            );
+
+            discardConnection(connection);
+            transactionStarted = false;
+          }
+        }
       }
 
       if (err.code === 'ER_DUP_ENTRY') {
         return res.status(409).json({
           success: false,
-          message: 'This employee code or email address already exists.'
+          message: 'The generated employee code already exists. Please retry the registration.'
         });
       }
 
@@ -497,12 +678,16 @@ router.post(
 
       return res.status(500).json({
         success: false,
-        message: 'Administrator creation failed. No account was committed. Check email delivery and try again.'
+        message: 'Administrator creation failed. No account was committed.'
       });
 
     } finally {
       if (connection) {
-        connection.release();
+        if (discardedConnections.has(connection)) {
+          connection = null;
+        } else {
+          connection.release();
+        }
       }
     }
   }
