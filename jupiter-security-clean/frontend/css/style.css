@@ -136,6 +136,30 @@ main { padding: 1.5rem; flex: 1; }
 }
 .stat .value { font-size: 1.75rem; font-weight: 700; color: var(--primary); }
 .stat .label { font-size: 0.8rem; color: var(--muted); margin-top: 0.25rem; }
+/* Dashboard statistic card hover and keyboard-focus effects */
+.stat-interactive {
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.stat-interactive:hover,
+.stat-interactive:focus-visible {
+  background: #eef4ff;
+  border-color: var(--primary);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.12);
+  transform: translateY(-3px);
+  outline: none;
+}
+
+.stat-interactive:hover .label,
+.stat-interactive:focus-visible .label {
+  color: var(--primary);
+}
 
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td { padding: 0.65rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
@@ -999,5 +1023,711 @@ table {
     min-width: 0 !important;
     margin: 0 !important;
     box-sizing: border-box;
+  }
+}
+
+/* JUPITER DASHBOARD WELCOME ANIMATION */
+.dashboard-welcome-title {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  text-align: center;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+  font-size: clamp(1.1rem, 2.2vw, 1.5rem);
+  animation: jupiter-welcome-motion 12s ease-in-out infinite;
+  will-change: transform, color;
+}
+
+@keyframes jupiter-welcome-motion {
+  0% {
+    transform: translateX(-10px);
+    color: #1e3a8a;
+  }
+  25% {
+    transform: translateX(0);
+    color: #2563eb;
+  }
+  50% {
+    transform: translateX(10px);
+    color: #0f766e;
+  }
+  75% {
+    transform: translateX(0);
+    color: #7c3aed;
+  }
+  100% {
+    transform: translateX(-10px);
+    color: #1e3a8a;
+  }
+}
+
+/* Smaller movement and text on mobile screens */
+@media (max-width: 600px) {
+  .dashboard-welcome-title {
+    font-size: 1.05rem;
+    line-height: 1.4;
+    animation-name: jupiter-welcome-mobile;
+  }
+
+  @keyframes jupiter-welcome-mobile {
+    0% {
+      transform: translateX(-3px);
+      color: #1e3a8a;
+    }
+    25% {
+      transform: translateX(0);
+      color: #2563eb;
+    }
+    50% {
+      transform: translateX(3px);
+      color: #0f766e;
+    }
+    75% {
+      transform: translateX(0);
+      color: #7c3aed;
+    }
+    100% {
+      transform: translateX(-3px);
+      color: #1e3a8a;
+    }
+  }
+}
+
+/* Respect device accessibility preferences */
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-welcome-title {
+    animation: none;
+    transform: none;
+    color: #1e3a8a;
+    will-change: auto;
+  }
+}
+
+/* JUPITER DASHBOARD THREE-IMAGE SLIDESHOW */
+.dashboard-welcome-slideshow {
+  position: relative;
+  width: 120%;
+  height: 440px;
+  margin: 1.5rem 0 0 -10%;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #111827;
+}
+
+.dashboard-welcome-slide {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 1s ease-in-out;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.dashboard-welcome-slide.is-active {
+  opacity: 1;
+}
+
+/* Previous and Next image controls */
+.dashboard-slide-control {
+  position: absolute;
+  top: 50%;
+  z-index: 5;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 58px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #ff8c00;
+  font-size: 34px;
+  font-weight: bold;
+  cursor: pointer;
+  text-shadow: 0 2px 6px rgba(0,0,0,0.8);
+
+  transition: transform 0.2s ease, text-shadow 0.2s ease;
+}
+
+.dashboard-slide-control:hover {
+  background: transparent;
+  color: #ff8c00;
+  transform: translateY(-50%) scale(1.15);
+  text-shadow: 0 3px 9px rgba(0,0,0,1);
+}
+
+.dashboard-slide-control:focus-visible {
+  outline: 3px solid #60a5fa;
+  outline-offset: 3px;
+}
+
+.dashboard-slide-previous {
+  left: 12px;
+}
+
+.dashboard-slide-next {
+  right: 12px;
+}
+
+/* Mobile sizing and controls */
+@media (max-width: 600px) {
+  .dashboard-welcome-slideshow {
+    width: 100%;
+    height: 300px;
+    margin-left: 0;
+    margin-top: 1rem;
+  }
+
+  .dashboard-slide-control {
+    width: 42px;
+    height: 52px;
+    font-size: 22px;
+  }
+
+  .dashboard-slide-previous {
+    left: 7px;
+  }
+
+  .dashboard-slide-next {
+    right: 7px;
+  }
+}
+
+/* Respect reduced-motion accessibility preferences */
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-welcome-slide,
+  .dashboard-slide-control {
+    transition: none;
+  }
+}
+
+
+
+
+
+
+/* FINAL OVERRIDE: Clean transparent slideshow arrows */
+#main-screen .dashboard-slide-control,
+#main-screen .dashboard-slide-control:hover,
+#main-screen .dashboard-slide-control:focus,
+#main-screen .dashboard-slide-control:focus-visible,
+#main-screen .dashboard-slide-control:active {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  color: #ff8c00 !important;
+}
+
+#main-screen .dashboard-slide-control {
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8) !important;
+}
+
+#main-screen .dashboard-slide-control:hover {
+  text-shadow: 0 3px 9px rgba(0, 0, 0, 0.9) !important;
+}
+
+#main-screen .dashboard-slide-control::before,
+#main-screen .dashboard-slide-control::after {
+  background: transparent !important;
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* ==========================================
+   JUPITER SLIDESHOW - FINAL LAYOUT
+   ========================================== */
+
+/* Welcome card becomes an edge-to-edge image panel */
+#main-screen .card:has(> .dashboard-welcome-title) {
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+/* Welcome heading sits directly above the image */
+#main-screen .dashboard-welcome-title {
+  margin: 0 !important;
+  padding: 1rem 1.25rem !important;
+  text-align: center;
+}
+
+/* Image fills the entire available panel */
+#main-screen .dashboard-welcome-slideshow {
+  position: relative !important;
+  display: block !important;
+  width: 100% !important;
+  height: 560px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+}
+
+/* Images cover the entire slideshow */
+#main-screen .dashboard-welcome-slide {
+  pointer-events: none !important;
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+  object-position: center !important;
+  background: #ffffff !important;
+}
+
+/* Arrows remain inside the image with no rectangular boxes */
+#main-screen .dashboard-slide-control,
+#main-screen .dashboard-slide-control:hover,
+#main-screen .dashboard-slide-control:focus,
+#main-screen .dashboard-slide-control:active {
+  position: absolute !important;
+  top: 50% !important;
+  width: 48px !important;
+  height: 58px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: none !important;
+  background-color: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  color: #ff8c00 !important;
+  font-size: 34px !important;
+  font-weight: bold !important;
+  text-shadow: 0 2px 7px rgba(0,0,0,0.9) !important;
+  cursor: pointer !important;
+}
+
+#main-screen .dashboard-slide-previous {
+  left: 10px !important;
+  right: auto !important;
+}
+
+#main-screen .dashboard-slide-next {
+  right: 10px !important;
+  left: auto !important;
+}
+
+#main-screen .dashboard-slide-control:hover {
+  transform: translateY(-50%) scale(1.15) !important;
+}
+
+/* Mobile slideshow */
+@media (max-width: 600px) {
+  #main-screen .dashboard-welcome-title {
+    padding: 0.85rem 0.5rem !important;
+  }
+
+  #main-screen .dashboard-welcome-slideshow {
+    height: 300px !important;
+  }
+
+  #main-screen .dashboard-slide-control {
+    width: 38px !important;
+    height: 48px !important;
+    font-size: 25px !important;
+  }
+
+  #main-screen .dashboard-slide-previous {
+    left: 5px !important;
+  }
+
+  #main-screen .dashboard-slide-next {
+    right: 5px !important;
+  }
+}
+
+
+
+/* ==========================================
+   JUPITER SLIDESHOW - SELECTIVE IMAGE SIZING
+   ========================================== */
+
+/* Keep the slideshow dimensions unchanged */
+#main-screen .dashboard-welcome-slideshow {
+  height: 560px !important;
+}
+
+/* Enlarge Jupiter Security and Firearm Register only */
+#main-screen .dashboard-slide-one,
+#main-screen .dashboard-slide-two {
+  width: 115% !important;
+  height: 115% !important;
+  max-width: none !important;
+  max-height: none !important;
+  left: -7.5% !important;
+  top: -7.5% !important;
+  object-fit: contain !important;
+  object-position: center !important;
+}
+
+/* Keep Firearm Sign-out unchanged */
+#main-screen .dashboard-slide-three {
+  width: 100% !important;
+  height: 100% !important;
+  left: 0 !important;
+  top: 0 !important;
+  object-fit: contain !important;
+}
+
+/* Responsive sizing */
+@media (max-width: 600px) {
+  #main-screen .dashboard-welcome-slideshow {
+    height: 300px !important;
+  }
+}
+
+/* ==========================================
+   DASHBOARD FULL-SCREEN IMAGE PRESENTATION
+   ========================================== */
+
+#main-screen .dashboard-image-presentation {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 99999 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 15px !important;
+  background: rgba(0, 0, 0, 0.97) !important;
+  box-sizing: border-box !important;
+}
+
+#main-screen .dashboard-image-presentation[hidden] {
+  display: none !important;
+}
+
+#main-screen .dashboard-presentation-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  gap: 15px;
+}
+
+#main-screen .dashboard-presentation-image {
+  display: block;
+  width: auto !important;
+  height: auto !important;
+  max-width: 96vw !important;
+  max-height: calc(100vh - 115px) !important;
+  max-height: calc(100dvh - 115px) !important;
+  object-fit: contain !important;
+  object-position: center !important;
+  background: #ffffff;
+  border-radius: 5px;
+}
+
+#main-screen .dashboard-presentation-back {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 11px 26px !important;
+  margin: 0 auto !important;
+  background: #ff8c00 !important;
+  color: #ffffff !important;
+  border: none !important;
+  border-radius: 7px !important;
+  font-size: 16px !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+  box-shadow: none !important;
+}
+
+#main-screen .dashboard-presentation-back:hover {
+  background: #e67e00 !important;
+}
+
+@media (max-width: 600px) {
+  #main-screen .dashboard-image-presentation {
+    padding: 8px !important;
+  }
+
+  #main-screen .dashboard-presentation-image {
+    max-width: 96vw !important;
+    max-height: calc(100dvh - 105px) !important;
+  }
+
+  #main-screen .dashboard-presentation-back {
+    min-height: 44px;
+    font-size: 14px !important;
+  }
+}
+
+/* JSMS ACTIVE SLIDESHOW CLICK FIX */
+#main-screen .dashboard-welcome-slide {
+  pointer-events: none !important;
+}
+
+#main-screen .dashboard-welcome-slide.is-active {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+}
+/* JSMS GLOBAL ORANGE FIELD DESIGN - START */
+
+/* Consistent orange borders and clean white interiors */
+#login-screen input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="hidden"]):not([type="file"]):not([type="image"]):not([type="color"]),
+#main-screen input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="hidden"]):not([type="file"]):not([type="image"]):not([type="color"]),
+#login-screen select,
+#main-screen select,
+#login-screen textarea,
+#main-screen textarea {
+  border: 1.5px solid #f59e0b;
+  border-radius: 9px;
+  background-color: #ffffff;
+  color: #1e293b;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Orange focus effect */
+#login-screen input:focus,
+#main-screen input:focus,
+#login-screen select:focus,
+#main-screen select:focus,
+#login-screen textarea:focus,
+#main-screen textarea:focus {
+  border-color: #ea8500 !important;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.20) !important;
+}
+
+/* Readable placeholder text */
+#login-screen input::placeholder,
+#main-screen input::placeholder,
+#login-screen textarea::placeholder,
+#main-screen textarea::placeholder {
+  color: #94a3b8;
+  opacity: 1;
+}
+
+/* Orange selection accents */
+#login-screen input[type="checkbox"],
+#main-screen input[type="checkbox"],
+#login-screen input[type="radio"],
+#main-screen input[type="radio"],
+#main-screen input[type="range"] {
+  accent-color: #f59e0b;
+}
+
+/* Orange file upload controls */
+#main-screen input[type="file"],
+#login-screen input[type="file"] {
+  border: 1.5px solid #f59e0b;
+  border-radius: 9px;
+  padding: 8px;
+  background: #ffffff;
+  color: #1e293b;
+}
+
+#main-screen input[type="file"]::file-selector-button,
+#login-screen input[type="file"]::file-selector-button {
+  background: #f59e0b;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  margin-right: 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+#main-screen input[type="file"]::file-selector-button:hover,
+#login-screen input[type="file"]::file-selector-button:hover {
+  background: #d97706;
+}
+
+/* Disabled fields remain visually distinguishable */
+#main-screen input:disabled,
+#main-screen select:disabled,
+#main-screen textarea:disabled,
+#login-screen input:disabled {
+  background-color: #f1f5f9;
+  color: #94a3b8;
+  border-color: #cbd5e1;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* JSMS GLOBAL ORANGE FIELD DESIGN - END */
+
+
+/* GUARDS DATE FIELDS - PREVENT DUPLICATE PLACEHOLDER DISPLAY */
+
+.guard-date-field input[type="date"] {
+  color: transparent;
+  background-color: #ffffff;
+  border: 1.5px solid #f59e0b;
+}
+
+.guard-date-field input[type="date"]::-webkit-datetime-edit {
+  color: transparent;
+}
+
+.guard-date-field input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.guard-date-field:focus-within input[type="date"]::-webkit-datetime-edit,
+.guard-date-field.has-value input[type="date"]::-webkit-datetime-edit {
+  color: #1e293b;
+}
+
+.guard-date-field:focus-within > span,
+.guard-date-field.has-value > span {
+  display: none;
+}
+
+/* END GUARDS DATE FIELD FIX */
+
+
+/* JSMS SHIFT DATE DUPLICATE PROMPT FIX - START */
+.shift-date-field input[type="date"] {
+    color: transparent;
+    background-color: #ffffff;
+    border: 1.5px solid #f59e0b;
+}
+
+.shift-date-field input[type="date"]::-webkit-datetime-edit {
+    color: transparent;
+}
+
+.shift-date-field input[type="date"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.85;
+}
+
+.shift-date-field:focus-within input[type="date"]::-webkit-datetime-edit,
+.shift-date-field.has-value input[type="date"]::-webkit-datetime-edit {
+    color: #1e293b;
+}
+
+.shift-date-field:focus-within > span,
+.shift-date-field.has-value > span {
+    display: none;
+}
+/* JSMS SHIFT DATE DUPLICATE PROMPT FIX - END */
+
+
+/* ==========================================
+   ANNOUNCEMENTS - IMPROVED INPUT SIZING
+   ========================================== */
+
+/* Larger announcement message box */
+#announcement-message {
+  width: 100%;
+  min-height: 200px;
+  box-sizing: border-box;
+  resize: vertical;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+/* Larger readership search field */
+input[id^="announcement-reader-search-"] {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 50px;
+  box-sizing: border-box;
+  padding: 12px 15px;
+  font-size: 1rem;
+}
+
+
+/* ========== APPLICATION FOOTER ========== */
+#app-footer {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: auto;
+  padding: 14px 20px;
+  text-align: center;
+  background: var(--primary);
+  border-top: 1px solid var(--border);
+  color: white;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+#app-footer p {
+  margin: 2px 0;
+}
+
+@media (max-width: 600px) {
+  #app-footer {
+    padding: 12px 10px;
+    font-size: 0.75rem;
+  }
+}
+/* ========== FOOTER CONTACT DETAILS ========== */
+
+#app-footer .footer-title {
+  font-weight: 700;
+  margin-bottom: 10px;
+  color: white;
+}
+
+#app-footer .footer-contact {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  margin: 8px 0 12px;
+}
+
+#app-footer .footer-contact a {
+  color: white;
+  text-decoration: none;
+  font-size: 0.82rem;
+  transition: opacity 0.2s ease;
+}
+
+#app-footer .footer-contact a:hover {
+  opacity: 0.75;
+  text-decoration: underline;
+}
+
+#app-footer .footer-copyright {
+  color: white;
+  opacity: 0.8;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 600px) {
+  #app-footer .footer-contact {
+    flex-direction: column;
+    gap: 8px;
   }
 }

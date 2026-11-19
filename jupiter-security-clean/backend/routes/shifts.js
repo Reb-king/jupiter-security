@@ -588,6 +588,455 @@ router.put(
   }
 );
 
+
+// PUT change an existing scheduled shift between Day and Night
+router.put('/:id/type', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  let connection;
+  let transactionStarted = false;
+
+  try {
+    const shiftId = Number(req.params.id);
+    const shiftType = String(req.body.shift_type || '').trim().toLowerCase();
+
+    if (!Number.isSafeInteger(shiftId) || shiftId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid shift ID is required.'
+      });
+    }
+
+    if (!['day', 'night'].includes(shiftType)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Shift type must be Day or Night.'
+      });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    const [rows] = await connection.query(
+      `SELECT id, guard_id, shift_date, shift_type, status
+       FROM scheduled_shifts
+       WHERE id = ?
+       FOR UPDATE`,
+      [shiftId]
+    );
+
+    if (!rows.length) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found.'
+      });
+    }
+
+    const shift = rows[0];
+
+    if (shift.status !== 'scheduled' ||
+        !['day', 'night'].includes(String(shift.shift_type).toLowerCase())) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: 'Only scheduled Day or Night shifts can be edited.'
+      });
+    }
+
+    if (String(shift.shift_type).toLowerCase() === shiftType) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.json({
+        success: true,
+        message: 'The shift already has this type.'
+      });
+    }
+
+    const [attendanceRows] = await connection.query(
+      `SELECT id
+       FROM attendance
+       WHERE scheduled_shift_id = ?
+       LIMIT 1`,
+      [shiftId]
+    );
+
+    if (attendanceRows.length) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: 'This shift has attendance history and cannot be edited.'
+      });
+    }
+
+    const shiftDate = String(shift.shift_date).slice(0, 10);
+
+    const [conflicts] = await connection.query(
+      `SELECT id
+       FROM scheduled_shifts
+       WHERE guard_id = ?
+         AND shift_date = ?
+         AND id <> ?
+       LIMIT 1`,
+      [shift.guard_id, shiftDate, shiftId]
+    );
+
+    if (conflicts.length) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: 'Another shift record exists for this guard on this date. No changes were made.'
+      });
+    }
+
+    const times = generateShiftTimes(shiftDate, shiftType);
+
+    await connection.query(
+      `UPDATE scheduled_shifts
+       SET shift_type = ?,
+           start_time = ?,
+           end_time = ?
+       WHERE id = ?`,
+      [
+        shiftType,
+        times.start_time,
+        times.end_time,
+        shiftId
+      ]
+    );
+
+    await connection.commit();
+    transactionStarted = false;
+
+    publishShiftChange({
+      guard_id: shift.guard_id,
+      action: 'updated',
+      shift_id: shiftId,
+      total_shifts: 1
+    });
+
+    return res.json({
+      success: true,
+      message: 'Shift type updated successfully.'
+    });
+
+  } catch (err) {
+    if (connection && transactionStarted) {
+      await connection.rollback();
+    }
+
+    console.error('Update shift type error:', err);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update shift type.'
+    });
+
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// PUT edit the date and times of one scheduled Off shift only
+router.put('/:id/off-time', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  let connection;
+  let transactionStarted = false;
+
+  try {
+    const shiftId = Number(req.params.id);
+    const shiftDate = String(req.body.shift_date || '').trim();
+    const startTime = String(req.body.start_time || '').trim();
+    const endTime = String(req.body.end_time || '').trim();
+
+    if (!Number.isSafeInteger(shiftId) || shiftId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid shift ID is required.'
+      });
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(shiftDate)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid shift date is required.'
+      });
+    }
+
+    const parsedDate = new Date(`${shiftDate}T00:00:00Z`);
+
+    if (Number.isNaN(parsedDate.getTime()) ||
+        parsedDate.toISOString().slice(0, 10) !== shiftDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'The shift date is invalid.'
+      });
+    }
+
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(startTime) ||
+        !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(endTime)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid start and end times are required.'
+      });
+    }
+
+    const startDateTime = `${shiftDate} ${startTime}:00`;
+
+    const endDate = new Date(`${shiftDate}T00:00:00Z`);
+
+    if (endTime <= startTime) {
+      endDate.setUTCDate(endDate.getUTCDate() + 1);
+    }
+
+    const endDateString = endDate.toISOString().slice(0, 10);
+    const endDateTime = `${endDateString} ${endTime}:00`;
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    const [rows] = await connection.query(
+      `SELECT id, guard_id, shift_type, status
+       FROM scheduled_shifts
+       WHERE id = ?
+       FOR UPDATE`,
+      [shiftId]
+    );
+
+    if (!rows.length) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found.'
+      });
+    }
+
+    const shift = rows[0];
+
+    if (String(shift.shift_type).toLowerCase() !== 'off') {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: 'Only Off shifts can use this date and time editor.'
+      });
+    }
+
+    if (shift.status !== 'scheduled') {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: 'Only scheduled Off shifts can be edited.'
+      });
+    }
+
+    const [attendanceRows] = await connection.query(
+      `SELECT id
+       FROM attendance
+       WHERE scheduled_shift_id = ?
+       LIMIT 1`,
+      [shiftId]
+    );
+
+    if (attendanceRows.length) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: 'This Off shift has attendance history and cannot be edited.'
+      });
+    }
+
+    const [conflicts] = await connection.query(
+      `SELECT id
+       FROM scheduled_shifts
+       WHERE guard_id = ?
+         AND id <> ?
+         AND status = 'scheduled'
+         AND start_time < ?
+         AND end_time > ?
+       LIMIT 1`,
+      [
+        shift.guard_id,
+        shiftId,
+        endDateTime,
+        startDateTime
+      ]
+    );
+
+    if (conflicts.length) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: 'These dates and times overlap another scheduled shift for this guard. No changes were made.'
+      });
+    }
+
+    await connection.query(
+      `UPDATE scheduled_shifts
+       SET shift_date = ?,
+           start_time = ?,
+           end_time = ?
+       WHERE id = ?`,
+      [
+        shiftDate,
+        startDateTime,
+        endDateTime,
+        shiftId
+      ]
+    );
+
+    await connection.commit();
+    transactionStarted = false;
+
+    publishShiftChange({
+      guard_id: shift.guard_id,
+      action: 'updated',
+      shift_id: shiftId,
+      total_shifts: 1
+    });
+
+    return res.json({
+      success: true,
+      message: 'Off shift date and times updated successfully.'
+    });
+
+  } catch (err) {
+    if (connection && transactionStarted) {
+      await connection.rollback();
+    }
+
+    console.error('Update Off shift date and time error:', err);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update Off shift date and times.'
+    });
+
+  } finally {
+    if (connection) connection.release();
+  }
+});
+// DELETE remove one scheduled shift without attendance history
+router.delete('/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+  let connection;
+  let transactionStarted = false;
+
+  try {
+    const shiftId = Number(req.params.id);
+
+    if (!Number.isSafeInteger(shiftId) || shiftId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid shift ID is required.'
+      });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    const [rows] = await connection.query(
+      `SELECT id, guard_id, status
+       FROM scheduled_shifts
+       WHERE id = ?
+       FOR UPDATE`,
+      [shiftId]
+    );
+
+    if (!rows.length) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found.'
+      });
+    }
+
+    const shift = rows[0];
+
+    if (shift.status !== 'scheduled') {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: 'Only scheduled shifts can be removed.'
+      });
+    }
+
+    const [attendanceRows] = await connection.query(
+      `SELECT id
+       FROM attendance
+       WHERE scheduled_shift_id = ?
+       LIMIT 1`,
+      [shiftId]
+    );
+
+    if (attendanceRows.length) {
+      await connection.rollback();
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: 'This shift has attendance history and cannot be removed.'
+      });
+    }
+
+    await connection.query(
+      'DELETE FROM scheduled_shifts WHERE id = ?',
+      [shiftId]
+    );
+
+    await connection.commit();
+    transactionStarted = false;
+
+    publishShiftChange({
+      guard_id: shift.guard_id,
+      action: 'removed',
+      shift_id: shiftId,
+      total_shifts: 1
+    });
+
+    return res.json({
+      success: true,
+      message: 'Shift removed successfully.'
+    });
+
+  } catch (err) {
+    if (connection && transactionStarted) {
+      await connection.rollback();
+    }
+
+    console.error('Remove shift error:', err);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to remove shift.'
+    });
+
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // GET scheduled day/night guard counts for each approved site
 router.get(
   '/coverage',

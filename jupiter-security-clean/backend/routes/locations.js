@@ -158,9 +158,9 @@ router.get('/live', authenticate, authorize('admin', 'manager'), async (req, res
       JOIN attendance a ON a.id = active_attendance.attendance_id
       JOIN users u ON u.id = a.guard_id
       LEFT JOIN guard_locations gl ON gl.guard_id = u.id
-      LEFT JOIN guard_site_assignments gsa
-        ON gsa.guard_id = u.id AND gsa.is_current = 1
-      LEFT JOIN sites s ON s.id = gsa.site_id
+      LEFT JOIN scheduled_shifts ss
+        ON ss.id = a.scheduled_shift_id
+      LEFT JOIN sites s ON s.id = ss.site_id
       WHERE u.role = 'guard' AND u.is_active = 1
       ORDER BY gl.recorded_at DESC, u.full_name ASC
     `);

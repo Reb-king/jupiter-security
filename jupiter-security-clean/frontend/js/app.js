@@ -25,6 +25,68 @@ document.addEventListener('DOMContentLoaded', () => {
 let jupiterLiveLocationTimer = null;
 let jupiterLiveLocationMap = null;
 let jupiterLiveLocationMarkers = null;
+// ---------- OpenStreetMap GPS Reverse Geocoding ----------
+let jupiterGeocodeCache = new Map();
+let jupiterNominatimQueue = Promise.resolve();
+let jupiterNominatimLastRequestAt = 0;
+
+async function jupiterLookupGpsPlace(latitude, longitude) {
+  const cacheKey = `${latitude.toFixed(4)},${longitude.toFixed(4)}`;
+
+  if (jupiterGeocodeCache.has(cacheKey)) {
+    return jupiterGeocodeCache.get(cacheKey);
+  }
+
+  const lookupPromise = jupiterNominatimQueue.then(async () => {
+    const elapsed = Date.now() - jupiterNominatimLastRequestAt;
+    const wait = 1100 - elapsed;
+
+    if (wait > 0) {
+      await new Promise(resolve => setTimeout(resolve, wait));
+    }
+
+    jupiterNominatimLastRequestAt = Date.now();
+
+    const url =
+      'https://nominatim.openstreetmap.org/reverse' +
+      `?format=jsonv2&lat=${encodeURIComponent(latitude)}` +
+      `&lon=${encodeURIComponent(longitude)}` +
+      '&zoom=18&addressdetails=1';
+
+    const response = await fetch(url, {
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenStreetMap returned HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+    return result.display_name || null;
+  });
+
+  jupiterNominatimQueue = lookupPromise.then(
+    () => undefined,
+    () => undefined
+  );
+
+  jupiterGeocodeCache.set(cacheKey, lookupPromise);
+
+  try {
+    const placeName = await lookupPromise;
+
+    jupiterGeocodeCache.set(
+      cacheKey,
+      placeName || 'Place name unavailable'
+    );
+
+    return placeName;
+  } catch (error) {
+    jupiterGeocodeCache.delete(cacheKey);
+    console.warn('GPS reverse geocoding failed:', error);
+    return null;
+  }
+}
 
 // ---------- Background Guard GPS Tracking ----------
 let jupiterGpsWatchId = null;
@@ -894,6 +956,13 @@ async function renderChangePassword(el) {
         <input type="password" id="confirm-password"
           autocomplete="new-password" minlength="4"
           maxlength="128" required />
+        <div style="margin:12px 0;">
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;">
+            <input type="checkbox" id="show-change-password"
+              style="width:auto;margin:0;">
+            Show Password
+          </label>
+        </div>
 
         <p id="change-password-message" role="status"></p>
         <button type="submit" id="change-password-submit">
@@ -906,6 +975,15 @@ async function renderChangePassword(el) {
   const form = document.getElementById('change-password-form');
   const message = document.getElementById('change-password-message');
   const submit = document.getElementById('change-password-submit');
+  const showPassword = document.getElementById('show-change-password');
+
+  showPassword.addEventListener('change', () => {
+    const passwordType = showPassword.checked ? 'text' : 'password';
+
+    document.getElementById('current-password').type = passwordType;
+    document.getElementById('new-password').type = passwordType;
+    document.getElementById('confirm-password').type = passwordType;
+  });
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -947,13 +1025,146 @@ async function renderDashboard(el) {
     <h2 style="margin-bottom:1rem">Dashboard</h2>
     <div class="grid" id="dash-stats"></div>
     <div class="card" style="margin-top:1.5rem">
-      <h2>Welcome to Jupiter Security Management System</h2>
-      <p style="color:var(--muted);margin-top:0.5rem">
-        Namibia · Currency: NAD · Shift pattern: 7 Day → 7 Night → 1 Off
-      </p>
+      <h2 class="dashboard-welcome-title">Welcome to Jupiter Security Management System</h2>
+      <div class="dashboard-welcome-slideshow" aria-label="Jupiter Security promotional slideshow">
+        <img class="dashboard-welcome-slide dashboard-slide-one is-active" src="/images/jupiter-security.jpg" alt="Jupiter Security">
+        <img class="dashboard-welcome-slide dashboard-slide-two" src="/images/firearm%20register.jpg" alt="Firearm Register">
+        <img class="dashboard-welcome-slide dashboard-slide-three" src="/images/firearm%20sign-out.jpg" alt="Firearm Sign-Out">
+
+        <button type="button" class="dashboard-slide-control dashboard-slide-previous"
+          aria-label="Previous promotional image" title="Previous image">&#10094;</button>
+
+        <button type="button" class="dashboard-slide-control dashboard-slide-next"
+          aria-label="Next promotional image" title="Next image">&#10095;</button>
+      </div>
     </div>
   `;
 
+  // Dashboard promotional slideshow controls
+  const dashboardSlideshow = el.querySelector('.dashboard-welcome-slideshow');
+
+  if (dashboardSlideshow) {
+    const dashboardSlides = Array.from(
+      dashboardSlideshow.querySelectorAll('.dashboard-welcome-slide')
+    );
+
+    const previousButton = dashboardSlideshow.querySelector('.dashboard-slide-previous');
+    const nextButton = dashboardSlideshow.querySelector('.dashboard-slide-next');
+
+    let currentDashboardSlide = 0;
+    let dashboardSlideTimer = null;
+    let presentationTimer = null;
+
+    // Create the full-screen image presentation overlay
+    const presentationOverlay = document.createElement('div');
+
+    presentationOverlay.className = 'dashboard-image-presentation';
+    presentationOverlay.hidden = true;
+    presentationOverlay.innerHTML = `
+      <div class="dashboard-presentation-content">
+        <img class="dashboard-presentation-image" alt="">
+        <button type="button" class="dashboard-presentation-back">
+          &#8592; Back to Dashboard
+        </button>
+      </div>
+    `;
+
+    el.appendChild(presentationOverlay);
+
+    const presentationImage = presentationOverlay.querySelector(
+      '.dashboard-presentation-image'
+    );
+
+    const backButton = presentationOverlay.querySelector(
+      '.dashboard-presentation-back'
+    );
+
+    const showDashboardSlide = (nextIndex) => {
+      dashboardSlides[currentDashboardSlide].classList.remove('is-active');
+
+      currentDashboardSlide =
+        (nextIndex + dashboardSlides.length) % dashboardSlides.length;
+
+      dashboardSlides[currentDashboardSlide].classList.add('is-active');
+    };
+
+    const resetDashboardSlideTimer = () => {
+      clearInterval(dashboardSlideTimer);
+
+      dashboardSlideTimer = setInterval(() => {
+        if (!dashboardSlideshow.isConnected) {
+          clearInterval(dashboardSlideTimer);
+          return;
+        }
+
+        showDashboardSlide(currentDashboardSlide + 1);
+      }, 20000);
+    };
+
+    // Return to the normal dashboard
+    const closePresentation = () => {
+      clearTimeout(presentationTimer);
+      presentationTimer = null;
+
+      presentationOverlay.hidden = true;
+      presentationImage.removeAttribute('src');
+      presentationImage.alt = '';
+
+      resetDashboardSlideTimer();
+    };
+
+    // Open the selected image for 30 seconds
+    const openPresentation = (slide) => {
+      clearInterval(dashboardSlideTimer);
+
+      presentationImage.src = slide.currentSrc || slide.src;
+      presentationImage.alt = slide.alt || 'Jupiter Security presentation image';
+
+      presentationOverlay.hidden = false;
+
+      presentationTimer = setTimeout(() => {
+        closePresentation();
+      }, 30000);
+    };
+
+    // Make all three promotional images clickable
+    dashboardSlides.forEach((slide) => {
+      slide.style.cursor = 'pointer';
+      slide.setAttribute('tabindex', '0');
+      slide.setAttribute('role', 'button');
+      slide.setAttribute(
+        'aria-label',
+        'Open ' + (slide.alt || 'promotional image') + ' presentation'
+      );
+
+      slide.addEventListener('click', () => {
+        openPresentation(slide);
+      });
+
+      slide.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openPresentation(slide);
+        }
+      });
+    });
+
+    // Manual return button
+    backButton.addEventListener('click', closePresentation);
+
+    // Existing previous and next controls
+    previousButton.addEventListener('click', () => {
+      showDashboardSlide(currentDashboardSlide - 1);
+      resetDashboardSlideTimer();
+    });
+
+    nextButton.addEventListener('click', () => {
+      showDashboardSlide(currentDashboardSlide + 1);
+      resetDashboardSlideTimer();
+    });
+
+    resetDashboardSlideTimer();
+  }
   if (currentUser.role !== 'guard') {
     try {
       const today = localDateString();
@@ -977,21 +1188,21 @@ async function renderDashboard(el) {
         });
 
       document.getElementById('dash-stats').innerHTML = `
-        <div class="stat" id="dash-active-guards" role="button" tabindex="0">
+        <div class="stat stat-interactive" id="dash-active-guards" role="button" tabindex="0">
           <div class="value">${guards.data.length}</div>
           <div class="label">Active Guards</div>
         </div>
-        <div class="stat" id="dash-approved-sites" role="button" tabindex="0">
+        <div class="stat stat-interactive" id="dash-approved-sites" role="button" tabindex="0">
           <div class="value">${sites.data.length}</div>
           <div class="label">Approved Sites</div>
         </div>
-        <div class="stat" id="dash-currently-on-duty" role="button" tabindex="0">
+        <div class="stat stat-interactive" id="dash-currently-on-duty" role="button" tabindex="0">
           <div class="value">
             ${live.data.filter(l => l.is_on_duty).length}
           </div>
           <div class="label">Currently On Duty</div>
         </div>
-        <div class="stat" id="dash-missing-cycles"
+        <div class="stat stat-interactive" id="dash-missing-cycles"
           role="button" tabindex="0"
           style="cursor:pointer;"
           title="Open Missing Shift Report">
@@ -1087,10 +1298,18 @@ async function renderGuards(el) {
 
       <div style="display:flex;gap:10px;align-items:center;
         flex-wrap:wrap;margin:16px 0;">
-        <input id="guard-search" type="search"
-          placeholder="Search name, employee code or username..."
-          aria-label="Search guards"
-          style="flex:1;min-width:240px;" />
+        <div id="guard-search-wrap" style="position:relative;flex:1;min-width:240px;">
+          <input id="guard-search" type="search"
+            placeholder="Search name, employee code or username..."
+            aria-label="Search guards"
+            autocomplete="off"
+            style="width:100%;box-sizing:border-box;" />
+          <div id="guard-suggestions" hidden
+            style="position:absolute;top:100%;left:0;right:0;z-index:1000;
+            background:var(--card);border:1px solid var(--border);
+            border-radius:8px;box-shadow:0 5px 15px rgba(0,0,0,.18);
+            max-height:260px;overflow-y:auto;"></div>
+        </div>
         <span id="guard-count" aria-live="polite"></span>
       </div>
 
@@ -1134,6 +1353,80 @@ async function renderGuards(el) {
 
   let guards = [];
   let isRefreshing = false;
+  const guardSuggestions = document.getElementById('guard-suggestions');
+  const guardSearchWrap = document.getElementById('guard-search-wrap');
+  let guardSuggestionMatches = [];
+
+  function renderGuardSuggestions() {
+    const query = searchInput.value.trim().toLowerCase();
+
+    if (!query) {
+      guardSuggestions.hidden = true;
+      guardSuggestions.innerHTML = '';
+      guardSuggestionMatches = [];
+      return;
+    }
+
+    guardSuggestionMatches = guards.filter(guard =>
+      [
+        guard.full_name,
+        guard.first_name,
+        guard.last_name,
+        guard.employee_code,
+        guard.username,
+        guard.user_name
+      ].some(value => String(value ?? '').toLowerCase().includes(query))
+    ).slice(0, 8);
+
+    if (!guardSuggestionMatches.length) {
+      guardSuggestions.hidden = true;
+      guardSuggestions.innerHTML = '';
+      return;
+    }
+
+    guardSuggestions.innerHTML = guardSuggestionMatches.map((guard, index) => {
+      const name = guard.full_name ||
+        [guard.first_name, guard.last_name].filter(Boolean).join(' ') ||
+        guard.employee_code || 'Unknown guard';
+
+      const label = [
+        name,
+        guard.employee_code,
+        guard.username || guard.user_name
+      ].filter(Boolean).join(' — ');
+
+      return `<button type="button" data-guard-suggestion="${index}"
+        style="display:block;width:100%;padding:10px 12px;text-align:left;
+        border:0;border-bottom:1px solid var(--border);
+        background:transparent;color:var(--text);cursor:pointer;">
+        ${escapeHTML(label)}
+      </button>`;
+    }).join('');
+
+    guardSuggestions.hidden = false;
+  }
+
+  guardSuggestions.addEventListener('click', event => {
+    const button = event.target.closest('[data-guard-suggestion]');
+    if (!button) return;
+
+    const selected = guardSuggestionMatches[Number(button.dataset.guardSuggestion)];
+    if (!selected) return;
+
+    searchInput.value =
+      selected.full_name ||
+      [selected.first_name, selected.last_name].filter(Boolean).join(' ') ||
+      selected.employee_code || '';
+
+    guardSuggestions.hidden = true;
+    renderGuardRows();
+  });
+
+  document.addEventListener('click', event => {
+    if (!guardSearchWrap.contains(event.target)) {
+      guardSuggestions.hidden = true;
+    }
+  });
 
   const dateOnly = value => value ? String(value).slice(0, 10) : '-';
 
@@ -1235,7 +1528,10 @@ async function renderGuards(el) {
     }
   }
 
-  searchInput.addEventListener('input', renderGuardRows);
+  searchInput.addEventListener('input', () => {
+    renderGuardRows();
+    renderGuardSuggestions();
+  });
   refreshButton.addEventListener('click', refreshGuards);
 
   document.getElementById('btn-add-guard').onclick = async () => {
@@ -1612,7 +1908,17 @@ async function renderSites(el) {
       </div>
 
       <div class="form-row">
-        <input id="s-search" type="search" placeholder="Search by site name..." />
+        <div id="site-search-wrap" style="position:relative;flex:1;min-width:220px;">
+          <input id="s-search" type="search"
+            placeholder="Search site name, code or town..."
+            autocomplete="off"
+            style="width:100%;box-sizing:border-box;" />
+          <div id="site-suggestions" hidden
+            style="position:absolute;top:100%;left:0;right:0;z-index:1000;
+            background:var(--card);border:1px solid var(--border);
+            border-radius:8px;box-shadow:0 5px 15px rgba(0,0,0,.18);
+            max-height:260px;overflow-y:auto;"></div>
+        </div>
         <button class="btn" id="btn-refresh-sites">Refresh Sites</button>
       </div>
 
@@ -1637,11 +1943,78 @@ async function renderSites(el) {
   const message = document.getElementById('sites-message');
   const addButton = document.getElementById('btn-add-site');
   const editPanel = document.getElementById('site-edit-panel');
+  const siteSuggestions = document.getElementById('site-suggestions');
+  const siteSearchWrap = document.getElementById('site-search-wrap');
+  let siteSuggestionMatches = [];
+
+  function renderSiteSuggestions() {
+    const query = searchInput.value.trim().toLowerCase();
+
+    if (!query) {
+      siteSuggestions.hidden = true;
+      siteSuggestions.innerHTML = '';
+      siteSuggestionMatches = [];
+      return;
+    }
+
+    siteSuggestionMatches = allSites.filter(site =>
+      [
+        site.name,
+        site.site_code,
+        site.town
+      ].some(value => String(value ?? '').toLowerCase().includes(query))
+    ).slice(0, 8);
+
+    if (!siteSuggestionMatches.length) {
+      siteSuggestions.hidden = true;
+      siteSuggestions.innerHTML = '';
+      return;
+    }
+
+    siteSuggestions.innerHTML = siteSuggestionMatches.map((site, index) => {
+      const label = [
+        site.name,
+        site.site_code,
+        site.town
+      ].filter(Boolean).join(' — ');
+
+      return `<button type="button" data-site-suggestion="${index}"
+        style="display:block;width:100%;padding:10px 12px;text-align:left;
+        border:0;border-bottom:1px solid var(--border);
+        background:transparent;color:var(--text);cursor:pointer;">
+        ${escapeHTML(label)}
+      </button>`;
+    }).join('');
+
+    siteSuggestions.hidden = false;
+  }
+
+  siteSuggestions.addEventListener('click', event => {
+    const button = event.target.closest('[data-site-suggestion]');
+    if (!button) return;
+
+    const selected = siteSuggestionMatches[Number(button.dataset.siteSuggestion)];
+    if (!selected) return;
+
+    searchInput.value = selected.name || selected.site_code || '';
+    siteSuggestions.hidden = true;
+    renderSiteRows();
+  });
+
+  document.addEventListener('click', event => {
+    if (!siteSearchWrap.contains(event.target)) {
+      siteSuggestions.hidden = true;
+    }
+  });
 
   function renderSiteRows() {
     const query = searchInput.value.trim().toLowerCase();
     const filtered = allSites.filter(site =>
-      String(site.name || '').toLowerCase().includes(query)
+      [
+        site.name,
+        site.site_code,
+        site.town
+      ].some(value => String(value ?? '').toLowerCase().includes(query))
     );
 
     if (!filtered.length) {
@@ -1758,7 +2131,10 @@ async function renderSites(el) {
     }
   };
 
-  searchInput.addEventListener('input', renderSiteRows);
+  searchInput.addEventListener('input', () => {
+    renderSiteRows();
+    renderSiteSuggestions();
+  });
 
   document.getElementById('btn-refresh-sites').onclick = async () => {
     await loadSites();
@@ -2364,6 +2740,18 @@ if (selectedDate &&
     <td>${escapeHTML(s.status || '-')}</td>
     <td>
       ${isManager ? `
+        ${String(s.shift_type || '').toLowerCase() === 'off' && String(s.status || '').toLowerCase() === 'scheduled' ? `
+          <button
+            type="button"
+            class="btn btn-edit-off-shift"
+            data-shift-id="${Number(s.id)}"
+            data-shift-date="${escapeHTML(String(s.shift_date || '').slice(0, 10))}"
+            data-start-time="${escapeHTML(s.start_time ? String(s.start_time).replace('T', ' ').slice(11, 16) : '06:00')}"
+            data-end-time="${escapeHTML(s.end_time ? String(s.end_time).replace('T', ' ').slice(11, 16) : '06:00')}">
+            Edit Off Date/Time
+          </button>
+        ` : ''}
+        ${String(s.shift_type || '').toLowerCase() !== 'off' ? `
         <button
           type="button"
           class="btn btn-edit-shift-site"
@@ -2371,6 +2759,20 @@ if (selectedDate &&
           data-site-id="${Number(s.site_id)}">
           Edit Site
         </button>
+        <button
+          type="button"
+          class="btn btn-edit-shift-type"
+          data-shift-id="${Number(s.id)}"
+          data-shift-type="${escapeHTML(String(s.shift_type || '').toLowerCase())}">
+          Edit Type
+        </button>
+        <button
+          type="button"
+          class="btn btn-remove-shift"
+          data-shift-id="${Number(s.id)}">
+          Remove Shift
+        </button>
+        ` : ''}
       ` : '-'}
     </td>
   </tr>
@@ -2896,7 +3298,311 @@ if (isManager) {
       button.disabled = false;
     }
   });
+
+  // Handle Edit Type buttons
+  rowsElement.addEventListener('click', async (event) => {
+    const button = event.target.closest('.btn-edit-shift-type');
+    if (!button) return;
+
+    const shiftId = Number(button.dataset.shiftId);
+    const currentType = String(button.dataset.shiftType || '').toLowerCase();
+
+    if (!['day', 'night'].includes(currentType)) {
+      alert('Unable to determine the current shift type.');
+      return;
+    }
+
+    const oppositeType = currentType === 'day' ? 'night' : 'day';
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position:fixed;
+      inset:0;
+      background:rgba(0,0,0,0.55);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      z-index:10000;
+      padding:20px;
+    `;
+
+    overlay.innerHTML = `
+      <div style="
+        background:var(--card-bg,#fff);
+        color:var(--text-color,inherit);
+        padding:24px;
+        border-radius:10px;
+        width:100%;
+        max-width:400px;
+        box-sizing:border-box;
+        box-shadow:0 8px 30px rgba(0,0,0,0.25);
+      ">
+        <h3 style="margin-top:0;">Change Shift Type</h3>
+
+        <p>Current shift: <strong>${currentType.toUpperCase()}</strong></p>
+
+        <label for="edit-shift-type-select">
+          Select new shift type:
+        </label>
+
+        <select id="edit-shift-type-select" style="
+          display:block;
+          width:100%;
+          padding:12px;
+          margin:12px 0 20px;
+          border:1px solid #ccc;
+          border-radius:6px;
+          box-sizing:border-box;
+        ">
+          <option value="day" ${oppositeType === 'day' ? 'selected' : ''}>
+            Day (06:00–18:00)
+          </option>
+          <option value="night" ${oppositeType === 'night' ? 'selected' : ''}>
+            Night (18:00–06:00 next day)
+          </option>
+        </select>
+
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button type="button" id="edit-shift-cancel" class="btn">
+            Cancel
+          </button>
+          <button type="button" id="edit-shift-confirm" class="btn">
+            Confirm
+          </button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const select = overlay.querySelector('#edit-shift-type-select');
+    const confirmButton = overlay.querySelector('#edit-shift-confirm');
+    const cancelButton = overlay.querySelector('#edit-shift-cancel');
+
+    const closeDialog = () => overlay.remove();
+
+    cancelButton.addEventListener('click', closeDialog);
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeDialog();
+    });
+
+    confirmButton.addEventListener('click', async () => {
+      const shiftType = select.value;
+
+      if (!['day', 'night'].includes(shiftType)) return;
+
+      if (shiftType === currentType) {
+        alert('Please select the opposite shift type.');
+        return;
+      }
+
+      confirmButton.disabled = true;
+      cancelButton.disabled = true;
+      select.disabled = true;
+      button.disabled = true;
+
+      try {
+        const result = await api(`/shifts/${shiftId}/type`, {
+          method: 'PUT',
+          body: JSON.stringify({ shift_type: shiftType })
+        });
+
+        closeDialog();
+
+        alert(result.message || 'Shift type updated successfully.');
+        await loadPage('shifts');
+
+      } catch (err) {
+        alert(err.message || 'Failed to update shift type.');
+
+        confirmButton.disabled = false;
+        cancelButton.disabled = false;
+        select.disabled = false;
+        button.disabled = false;
+      }
+    });
+  });
+
+  // Handle Edit Off Shift Date and Time buttons
+  rowsElement.addEventListener('click', async (event) => {
+    const button = event.target.closest('.btn-edit-off-shift');
+    if (!button) return;
+
+    const shiftId = Number(button.dataset.shiftId);
+    const currentDate = button.dataset.shiftDate || '';
+    const currentStart = button.dataset.startTime || '06:00';
+    const currentEnd = button.dataset.endTime || '06:00';
+
+    if (!Number.isSafeInteger(shiftId) || shiftId < 1) {
+      alert('Unable to determine the selected shift.');
+      return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position:fixed;
+      inset:0;
+      background:rgba(0,0,0,0.55);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      z-index:10000;
+      padding:20px;
+    `;
+
+    overlay.innerHTML = `
+      <div style="
+        background:var(--card-bg,#fff);
+        color:var(--text-color,inherit);
+        padding:24px;
+        border-radius:10px;
+        width:100%;
+        max-width:420px;
+        box-sizing:border-box;
+        box-shadow:0 8px 30px rgba(0,0,0,0.25);
+      ">
+        <h3 style="margin-top:0;">Edit Off Shift</h3>
+
+        <p>Change the date and times for Off shift #${shiftId}.</p>
+
+        <label for="edit-off-date">Shift date</label>
+        <input
+          type="date"
+          id="edit-off-date"
+          value="${escapeHTML(currentDate)}"
+          required
+          style="display:block;width:100%;padding:11px;margin:7px 0 15px;box-sizing:border-box;"
+        >
+
+        <label for="edit-off-start">Start time</label>
+        <input
+          type="time"
+          id="edit-off-start"
+          value="${escapeHTML(currentStart)}"
+          required
+          style="display:block;width:100%;padding:11px;margin:7px 0 15px;box-sizing:border-box;"
+        >
+
+        <label for="edit-off-end">End time</label>
+        <input
+          type="time"
+          id="edit-off-end"
+          value="${escapeHTML(currentEnd)}"
+          required
+          style="display:block;width:100%;padding:11px;margin:7px 0 20px;box-sizing:border-box;"
+        >
+
+        <p style="font-size:0.9em;color:var(--muted);">
+          If the end time is earlier than or equal to the start time,
+          the end will be on the following day.
+        </p>
+
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button type="button" id="edit-off-cancel" class="btn">
+            Cancel
+          </button>
+          <button type="button" id="edit-off-confirm" class="btn">
+            Save Changes
+          </button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const dateInput = overlay.querySelector('#edit-off-date');
+    const startInput = overlay.querySelector('#edit-off-start');
+    const endInput = overlay.querySelector('#edit-off-end');
+    const confirmButton = overlay.querySelector('#edit-off-confirm');
+    const cancelButton = overlay.querySelector('#edit-off-cancel');
+
+    const closeDialog = () => overlay.remove();
+
+    cancelButton.addEventListener('click', closeDialog);
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeDialog();
+    });
+
+    confirmButton.addEventListener('click', async () => {
+      const shiftDate = dateInput.value;
+      const startTime = startInput.value;
+      const endTime = endInput.value;
+
+      if (!shiftDate || !startTime || !endTime) {
+        alert('Please complete the date, start time and end time.');
+        return;
+      }
+
+      confirmButton.disabled = true;
+      cancelButton.disabled = true;
+      dateInput.disabled = true;
+      startInput.disabled = true;
+      endInput.disabled = true;
+      button.disabled = true;
+
+      try {
+        const result = await api(`/shifts/${shiftId}/off-time`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            shift_date: shiftDate,
+            start_time: startTime,
+            end_time: endTime
+          })
+        });
+
+        closeDialog();
+
+        alert(result.message || 'Off shift updated successfully.');
+        await loadPage('shifts');
+
+      } catch (err) {
+        alert(err.message || 'Failed to update Off shift.');
+
+        confirmButton.disabled = false;
+        cancelButton.disabled = false;
+        dateInput.disabled = false;
+        startInput.disabled = false;
+        endInput.disabled = false;
+        button.disabled = false;
+      }
+    });
+  });
+  // Handle Remove Shift buttons
+  rowsElement.addEventListener('click', async (event) => {
+    const button = event.target.closest('.btn-remove-shift');
+    if (!button) return;
+
+    const shiftId = Number(button.dataset.shiftId);
+
+    const confirmed = confirm(
+      `Are you sure you want to remove shift #${shiftId}?\n\n` +
+      'Only this scheduled shift will be removed. ' +
+      'Shifts with attendance history cannot be removed.'
+    );
+
+    if (!confirmed) return;
+
+    button.disabled = true;
+
+    try {
+      const result = await api(`/shifts/${shiftId}`, {
+        method: 'DELETE'
+      });
+
+      alert(result.message || 'Shift removed successfully.');
+      await loadPage('shifts');
+
+    } catch (err) {
+      alert(err.message || 'Failed to remove shift.');
+
+    } finally {
+      button.disabled = false;
+    }
+  });
 }
+
 }
 
 // ---------- Attendance ----------
@@ -3080,7 +3786,19 @@ async function renderLocation(el) {
     maxZoom: 19
   }).addTo(jupiterLiveLocationMap);
 
-  jupiterLiveLocationMarkers = L.layerGroup().addTo(jupiterLiveLocationMap);
+  if (typeof L.markerClusterGroup !== 'function') {
+    throw new Error('Leaflet MarkerCluster could not load. Please check your internet connection.');
+  }
+
+  jupiterLiveLocationMarkers = L.markerClusterGroup({
+    spiderfyOnMaxZoom: true,
+    zoomToBoundsOnClick: true,
+    showCoverageOnHover: false,
+    removeOutsideVisibleBounds: true,
+    maxClusterRadius: 45,
+    spiderfyDistanceMultiplier: 1.5,
+    chunkedLoading: true
+  }).addTo(jupiterLiveLocationMap);
 
   // Separate layer for the logged-in admin/manager.
   const myLocationLayer = L.layerGroup().addTo(jupiterLiveLocationMap);
@@ -3322,25 +4040,86 @@ async function renderLocation(el) {
           onDutyBounds.push([latitude, longitude]);
         }
 
-        const marker = L.circleMarker([latitude, longitude], {
-          radius: 9,
-          color: onDuty ? '#15803d' : '#b91c1c',
-          fillColor: onDuty ? '#22c55e' : '#ef4444',
-          fillOpacity: 0.9,
-          weight: 2
+        const marker = L.marker([latitude, longitude], {
+          icon: L.divIcon({
+            className: 'jupiter-guard-location-icon',
+            html: `
+              <div style="
+                width:34px;
+                height:42px;
+                filter:drop-shadow(0 2px 3px rgba(0,0,0,0.45));
+              ">
+                <svg viewBox="0 0 36 44" width="34" height="42"
+                  xmlns="http://www.w3.org/2000/svg">
+                  <path
+                    d="M18 2 C9 2 3 9 3 17 C3 27 18 42 18 42
+                       C18 42 33 27 33 17 C33 9 27 2 18 2 Z"
+                    fill="${onDuty ? '#22c55e' : '#ef4444'}"
+                    stroke="${onDuty ? '#166534' : '#991b1b'}"
+                    stroke-width="2"/>
+                  <circle cx="18" cy="17" r="6"
+                    fill="#ffffff" stroke="#ffffff" stroke-width="1"/>
+                </svg>
+              </div>
+            `,
+            iconSize: [34, 42],
+            iconAnchor: [17, 40],
+            popupAnchor: [0, -38]
+          })
         });
 
         const recordedAt = l.recorded_at
           ? String(l.recorded_at).replace('T', ' ').slice(0, 19)
           : '-';
 
-        marker.bindPopup(`
-          <strong>${escapeHTML(l.full_name || 'Unknown guard')}</strong><br>
-          Employee Code: ${escapeHTML(l.employee_code || '-')}<br>
-          Status: ${onDuty ? 'On Duty' : 'Off Duty'}<br>
-          Site: ${escapeHTML(l.site_name || '-')}<br>
-          Last Update: ${escapeHTML(recordedAt)}
-        `);
+        const guardName = escapeHTML(l.full_name || 'Unknown guard');
+        const siteName = escapeHTML(l.site_name || 'Not assigned');
+        const siteCode = escapeHTML(l.site_code || '-');
+        const gpsLocation = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+
+        // Hover information.
+        marker.bindTooltip(`
+          <div style="line-height:1.6;min-width:180px">
+            <strong>${guardName}</strong><br>
+            GPS Location: ${escapeHTML(gpsLocation)}<br>
+            Assigned Site: ${siteName}<br>
+            Site Code: ${siteCode}
+          </div>
+        `, {
+          direction: 'top',
+          offset: [0, -34],
+          sticky: true,
+          opacity: 0.97
+        });
+
+        // Detailed information on click.
+        const buildGuardPopup = placeName => `
+          <div style="line-height:1.7;min-width:220px">
+            <strong>${guardName}</strong><br>
+            Employee Code: ${escapeHTML(l.employee_code || '-')}<br>
+            Status: ${onDuty ? 'On Duty' : 'Off Duty'}<br>
+            GPS Place: ${escapeHTML(placeName || 'Looking up place name...')}<br>
+            GPS Coordinates: ${escapeHTML(gpsLocation)}<br>
+            Site: ${siteName}<br>
+            Site Code: ${siteCode}<br>
+            Last Update: ${escapeHTML(recordedAt)}<br>
+            <small>Address data: © OpenStreetMap contributors</small>
+          </div>
+        `;
+
+        marker.bindPopup(buildGuardPopup(null));
+
+        // Look up the GPS address only when management opens the popup.
+        marker.on('popupopen', async () => {
+          const placeName =
+            await jupiterLookupGpsPlace(latitude, longitude);
+
+          if (!marker.isPopupOpen()) return;
+
+          marker.setPopupContent(
+            buildGuardPopup(placeName || 'Place name unavailable')
+          );
+        });
 
         marker.addTo(jupiterLiveLocationMarkers);
 
@@ -4362,17 +5141,6 @@ async function renderClock(el) {
     }
   }
 })();
-
-
-
-
-
-
-
-
-
-
-
 
 
 
