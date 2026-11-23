@@ -1,7 +1,7 @@
 
 const express = require('express');
 const pool = require('../config/db');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, authorizeManagementRead } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -74,6 +74,19 @@ router.post('/update', authenticate, async (req, res) => {
       });
     }
 
+    // Do not overwrite a reliable location with poor or unverified GPS.
+    if (accuracy === null || accuracy > 100) {
+      await connection.commit();
+
+      return res.json({
+        success: true,
+        message: 'GPS reading ignored because accuracy is unavailable or worse than 100 metres.',
+        tracking_active: true,
+        location_accepted: false,
+        history_saved: false
+      });
+    }
+
     // Always maintain the existing latest live-location record.
     await connection.query(
       `INSERT INTO guard_locations
@@ -112,6 +125,8 @@ router.post('/update', authenticate, async (req, res) => {
     return res.json({
       success: true,
       message: 'Location updated.',
+      tracking_active: true,
+      location_accepted: true,
       history_saved: historySaved
     });
 
@@ -137,7 +152,7 @@ router.post('/update', authenticate, async (req, res) => {
 });
 
 // GET all live locations (management only)
-router.get('/live', authenticate, authorize('admin', 'manager'), async (req, res) => {
+router.get('/live', authenticate, authorizeManagementRead, async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT

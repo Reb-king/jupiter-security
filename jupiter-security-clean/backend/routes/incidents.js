@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 
 const pool = require('../config/db');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, authorizeManagementRead, authorizeManagementReadOrGuard, authorizeManagementEdit } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -271,7 +271,7 @@ router.post(
 router.get(
   '/',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementRead,
   async (req, res, next) => {
     try {
       const [reports] = await pool.execute(
@@ -336,7 +336,7 @@ router.get(
 router.put(
   '/:id/clear',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res, next) => {
     try {
       const incidentId = Number(req.params.id);
@@ -376,7 +376,7 @@ router.put(
 router.get(
   '/:incidentId/attachments/:attachmentId',
   authenticate,
-  authorize('guard', 'admin', 'manager'),
+  authorizeManagementReadOrGuard,
   async (req, res, next) => {
     try {
       const incidentId = Number(req.params.incidentId);
@@ -470,4 +470,5 @@ router.get(
 );
 
 module.exports = router;
+
 

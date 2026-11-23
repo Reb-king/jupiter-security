@@ -7,7 +7,28 @@ let currentUser = null;
 let attendanceEventsController = null;
 let attendanceEventsRetryTimer = null;
 let currentPage = null;
+
 let shiftScheduleRealtimeRefresh = null;
+
+function isManagingDirectorAccount(user = currentUser) {
+  return Boolean(
+    user && user.role === 'manager' && user.employee_code === 'JUP-MD-001'
+  );
+}
+
+function canViewManagementPages(user = currentUser) {
+  return Boolean(user && (
+    user.role === 'admin' ||
+    user.role === 'management_viewer' ||
+    isManagingDirectorAccount(user)
+  ));
+}
+
+function canEditManagementPages(user = currentUser) {
+  return Boolean(user && (
+    user.role === 'admin' || isManagingDirectorAccount(user)
+  ));
+}
 
 // ---------- Login Password Visibility ----------
 document.addEventListener('DOMContentLoaded', () => {
@@ -126,6 +147,16 @@ function startGuardGpsTracking() {
       const longitude = position.coords.longitude;
       const accuracy_m = position.coords.accuracy;
 
+      // Ignore inaccurate GPS readings before they affect tracking.
+      if (
+        !Number.isFinite(accuracy_m) ||
+        accuracy_m < 0 ||
+        accuracy_m > 100
+      ) {
+        console.warn(`GPS reading ignored: accuracy ${accuracy_m}m exceeds the 100m limit or is invalid.`);
+        return;
+      }
+
       const now = Date.now();
 
       const distance = jupiterGpsLastPosition
@@ -151,7 +182,7 @@ function startGuardGpsTracking() {
       jupiterGpsSending = true;
 
       try {
-        await api('/locations/update', {
+        const updateResult = await api('/locations/update', {
           method: 'POST',
           body: JSON.stringify({
             latitude,
@@ -159,6 +190,10 @@ function startGuardGpsTracking() {
             accuracy_m
           })
         });
+
+        if (updateResult.location_accepted === false) {
+          return;
+        }
 
         jupiterGpsLastSentAt = Date.now();
         jupiterGpsLastPosition = {
@@ -532,22 +567,25 @@ function enterApp() {
     currentUser.full_name || '';
 
   document.getElementById('user-role').textContent =
-    currentUser.employee_code === 'JUP-ADMIN-001'
+    isManagingDirectorAccount()
       ? 'Managing Director'
-      : (currentUser.role || '');
+      : currentUser.role === 'management_viewer'
+        ? (currentUser.job_title || 'Management Staff')
+        : currentUser.role === 'admin'
+          ? 'Administrator'
+          : (currentUser.role || '');
 
   document.querySelectorAll('.admin-only').forEach(el => {
-    el.style.display =
-      (currentUser.role === 'admin' || currentUser.role === 'manager')
-        ? ''
-        : 'none';
+    el.style.display = canViewManagementPages() ? '' : 'none';
+  });
+
+  document.querySelectorAll('.md-only').forEach(el => {
+    el.style.display = isManagingDirectorAccount() ? '' : 'none';
   });
 
   document.querySelectorAll('.admin-guard-only').forEach(el => {
     el.style.display =
-      (currentUser.role === 'admin' || currentUser.role === 'guard' || currentUser.role === 'manager')
-        ? ''
-        : 'none';
+      (canViewManagementPages() || currentUser.role === 'guard') ? '' : 'none';
   });
   document.querySelectorAll('.guard-only').forEach(el => {
     el.style.display = currentUser.role === 'guard' ? '' : 'none';
@@ -577,7 +615,12 @@ document.getElementById('sidebar').addEventListener('click', (e) => {
 });
 
 async function loadPage(page) {
-    currentPage = page;
+  currentPage = page;
+
+  // Synchronize the active sidebar tab with the displayed page.
+  document.querySelectorAll('.nav-btn').forEach(button => {
+    button.classList.toggle('active', button.dataset.page === page);
+  });
   if (jupiterLiveLocationTimer !== null) {
     clearInterval(jupiterLiveLocationTimer);
     jupiterLiveLocationTimer = null;
@@ -601,6 +644,7 @@ async function loadPage(page) {
       case 'attendance': await renderAttendance(content); break;
            case 'location': await renderLocation(content); break;
       case 'payroll': await renderPayroll(content); break;
+      case 'salary': await renderSalaryManagement(content); break;
       case 'incidents': await renderIncidents(content); break;
       case 'clock': await renderClock(content); break;
       case 'announcements': await renderAnnouncements(content); break;
@@ -614,15 +658,1244 @@ async function loadPage(page) {
 }
 
 
+
+// ---------- Salary Management ----------
+async function renderSalaryManagement(el) {
+  if (!isManagingDirectorAccount()) {
+    el.innerHTML = '<p class="error">Access denied.</p>';
+    return;
+  }
+
+  if (el._salaryController) {
+    el._salaryController.abort();
+  }
+
+  const controller = new AbortController();
+  el._salaryController = controller;
+  const signal = controller.signal;
+
+  const today = localDateString();
+  const currentDate = new Date();
+  const state = {
+    view: 'obligations',
+    employees: [],
+    rates: [],
+    obligations: [],
+    payments: [],
+    employeeFilter: '',
+    yearFilter: String(currentDate.getFullYear()),
+    monthFilter: String(currentDate.getMonth() + 1),
+    history: null,
+    historyId: null,
+    paymentId: null,
+    notice: '',
+    noticeType: 'success',
+    loading: false,
+    calculatorEmployeeId: '',
+    calculatorYear: String(currentDate.getFullYear()),
+    calculatorMonth: String(currentDate.getMonth() + 1),
+    calculatorResult: null
+  };
+
+  const monthNames = [
+    'January', 'February', 'March', 'April',
+    'May', 'June', 'July', 'August',
+    'September', 'October', 'November', 'December'
+  ];
+
+  function monthLabel(year, month) {
+    return `${monthNames[Number(month) - 1] || ''} ${year}`;
+  }
+
+  function dateValue(value) {
+    return value ? escapeHTML(String(value).slice(0, 10)) : '-';
+  }
+
+  function employeeLabel(employee) {
+    return `${employee.full_name} (${employee.employee_code})`;
+  }
+
+  function statusLabel(status) {
+    const value = String(status || '').toLowerCase();
+
+    if (value === 'paid' || value === 'fully_paid') return 'Paid';
+    if (value === 'partial' || value === 'partially_paid') return 'Partially paid';
+    if (value === 'overdue') return 'Overdue';
+    return 'Unpaid';
+  }
+
+  function employeeOptions(selected = '') {
+    return state.employees.map(employee => `
+      <option value="${employee.id}"
+        ${String(employee.id) === String(selected) ? 'selected' : ''}>
+        ${escapeHTML(employeeLabel(employee))}
+      </option>
+    `).join('');
+  }
+
+  function salaryRateOptions(employeeId, year, month) {
+    const selectedYear = String(year || '');
+    const selectedMonth = Number(month);
+
+    let matchingRates = [];
+
+    if (
+      employeeId &&
+      /^\d{4}$/.test(selectedYear) &&
+      Number(selectedYear) >= 2000 &&
+      Number(selectedYear) <= 2100 &&
+      Number.isInteger(selectedMonth) &&
+      selectedMonth >= 1 &&
+      selectedMonth <= 12
+    ) {
+      const monthStart =
+        `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-01`;
+
+      const monthEnd = new Date(Date.UTC(
+        Number(selectedYear),
+        selectedMonth,
+        0
+      )).toISOString().slice(0, 10);
+
+      matchingRates = state.rates.filter(rate => {
+        const effectiveFrom = String(rate.effective_from || '').slice(0, 10);
+        const effectiveTo = rate.effective_to
+          ? String(rate.effective_to).slice(0, 10)
+          : null;
+
+        return (
+          String(rate.employee_id) === String(employeeId) &&
+          effectiveFrom <= monthEnd &&
+          (!effectiveTo || effectiveTo >= monthStart)
+        );
+      });
+    }
+
+    return `
+      <option value="">No linked salary rate</option>
+      ${matchingRates.map(rate => `
+        <option value="${rate.id}">
+          ${escapeHTML(rate.employee_code)} -
+          ${formatNAD(rate.monthly_salary)} -
+          ${dateValue(rate.effective_from)}
+          ${rate.effective_to
+            ? ` to ${dateValue(rate.effective_to)}`
+            : ' (open)'}
+        </option>
+      `).join('')}
+    `;
+  }
+  function calculateSalarySuggestion(employeeId, year, month) {
+    const selectedYear = String(year || '');
+    const selectedMonth = Number(month);
+
+    if (!employeeId ||
+        !/^\d{4}$/.test(selectedYear) ||
+        Number(selectedYear) < 2000 ||
+        Number(selectedYear) > 2100 ||
+        !Number.isInteger(selectedMonth) ||
+        selectedMonth < 1 ||
+        selectedMonth > 12) {
+      return { ok: false, message: 'Select a valid employee, year and month.' };
+    }
+
+    const employee = state.employees.find(
+      item => String(item.id) === String(employeeId)
+    );
+
+    if (!employee) {
+      return { ok: false, message: 'The selected employee is not eligible.' };
+    }
+
+    const monthStart =
+      `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-01`;
+
+    const daysInMonth = new Date(Date.UTC(
+      Number(selectedYear),
+      selectedMonth,
+      0
+    )).getUTCDate();
+
+    const monthEnd =
+      `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+
+    function validISODate(value) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+
+      const date = new Date(`${value}T00:00:00Z`);
+
+      return !Number.isNaN(date.getTime()) &&
+        date.toISOString().slice(0, 10) === value;
+    }
+
+    const employeeRates = state.rates.filter(
+      rate => String(rate.employee_id) === String(employeeId)
+    );
+
+    if (!employeeRates.length) {
+      return {
+        ok: false,
+        message: 'No salary rates exist for this employee.'
+      };
+    }
+
+    const applicableRates = [];
+
+    for (const rate of employeeRates) {
+      const from = String(rate.effective_from || '').slice(0, 10);
+      const to = rate.effective_to
+        ? String(rate.effective_to).slice(0, 10)
+        : null;
+
+      if (!validISODate(from) || (to && !validISODate(to))) {
+        return {
+          ok: false,
+          message: 'A salary rate contains an invalid effective date. Please correct the rate history.'
+        };
+      }
+
+      if (to && to < from) {
+        return {
+          ok: false,
+          message: 'A salary rate ends before its effective start date.'
+        };
+      }
+
+      if (from <= monthEnd && (!to || to >= monthStart)) {
+        const amount = Number(rate.monthly_salary);
+
+        if (!Number.isFinite(amount) || amount <= 0) {
+          return {
+            ok: false,
+            message: 'An applicable salary rate has an invalid or non-positive amount.'
+          };
+        }
+
+        applicableRates.push({
+          rate,
+          from,
+          to,
+          amount,
+          days: 0
+        });
+      }
+    }
+
+    if (!applicableRates.length) {
+      return {
+        ok: false,
+        message: 'No salary rate covers the selected month.'
+      };
+    }
+
+    const gaps = [];
+    const overlaps = [];
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const date =
+        `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+      const matches = applicableRates.filter(item =>
+        item.from <= date && (!item.to || item.to >= date)
+      );
+
+      if (matches.length === 0) {
+        gaps.push(date);
+      } else if (matches.length > 1) {
+        overlaps.push(date);
+      } else {
+        matches[0].days++;
+      }
+    }
+
+    if (overlaps.length) {
+      return {
+        ok: false,
+        message: `Overlapping salary rates detected on ${overlaps.join(', ')}. Calculation stopped.`
+      };
+    }
+
+    if (gaps.length) {
+      return {
+        ok: false,
+        message: `Missing salary-rate coverage on ${gaps.join(', ')}. Calculation stopped.`
+      };
+    }
+
+    // Keep full precision for every period.
+    // Round only the final combined amount.
+
+    let total = 0;
+
+    const breakdown = applicableRates.map(item => {
+      const amount =
+        item.amount * item.days / daysInMonth;
+
+      total += amount;
+
+      return {
+        rateId: item.rate.id,
+        employeeCode: item.rate.employee_code,
+        monthlySalary: item.amount,
+        effectiveFrom: item.from,
+        effectiveTo: item.to,
+        days: item.days,
+        daysInMonth,
+        amount
+      };
+    });
+
+    const suggestedAmount =
+      Math.round((total + Number.EPSILON) * 100) / 100;
+
+    return {
+      ok: true,
+      employeeId: String(employeeId),
+      year: selectedYear,
+      month: String(selectedMonth),
+      total: suggestedAmount,
+      rateIds: applicableRates.map(item => item.rate.id),
+      breakdown
+    };
+  }
+
+  function filteredRates() {
+    return state.rates.filter(rate =>
+      !state.employeeFilter ||
+      String(rate.employee_id) === String(state.employeeFilter)
+    );
+  }
+
+  function filteredObligations() {
+    return state.obligations.filter(item => {
+      if (state.employeeFilter &&
+          String(item.employee_id) !== String(state.employeeFilter)) {
+        return false;
+      }
+
+      if (state.yearFilter &&
+          String(item.salary_year) !== state.yearFilter) {
+        return false;
+      }
+
+      if (state.monthFilter &&
+          String(item.salary_month) !== state.monthFilter) {
+        return false;
+      }
+
+      return true;
+    });
+  }
+
+  function filteredPayments() {
+    return state.payments.filter(payment => {
+      if (state.employeeFilter &&
+          String(payment.employee_id) !== String(state.employeeFilter)) {
+        return false;
+      }
+
+      if (state.yearFilter &&
+          String(payment.salary_year) !== state.yearFilter) {
+        return false;
+      }
+
+      if (state.monthFilter &&
+          String(payment.salary_month) !== state.monthFilter) {
+        return false;
+      }
+
+      return true;
+    });
+  }
+
+  function setNotice(message, type = 'success') {
+    state.notice = message;
+    state.noticeType = type;
+  }
+
+  async function loadData() {
+    state.loading = true;
+    draw();
+
+    try {
+      const [employees, rates, obligations, payments] = await Promise.all([
+        api('/salary/employees'),
+        api('/salary/rates'),
+        api('/salary/obligations'),
+        api('/salary/payments')
+      ]);
+
+      state.employees = Array.isArray(employees.data) ? employees.data : [];
+      state.rates = Array.isArray(rates.data) ? rates.data : [];
+      state.obligations = Array.isArray(obligations.data) ? obligations.data : [];
+      state.payments = Array.isArray(payments.data) ? payments.data : [];
+
+      state.loading = false;
+      draw();
+    } catch (error) {
+      state.loading = false;
+      setNotice(error.message || 'Could not load salary information.', 'error');
+      draw();
+    }
+  }
+
+  function draw() {
+    if (signal.aborted) return;
+
+    const obligations = filteredObligations();
+    const rates = filteredRates();
+
+    const totalDue = obligations.reduce(
+      (sum, item) => sum + Number(item.amount_due || 0), 0
+    );
+
+    const totalPaid = obligations.reduce(
+      (sum, item) => sum + Number(item.total_paid || 0), 0
+    );
+
+    const totalBalance = obligations.reduce(
+      (sum, item) => sum + Number(item.balance || 0), 0
+    );
+
+    const filterHTML = `
+      <div class="card">
+        <h2>Salary filters</h2>
+        <div class="form-row">
+          ${state.view === 'payments' ? `
+            <div class="salary-employee-search">
+              <label for="salary-payment-employee-search">Find employee</label>
+              <input type="search" id="salary-payment-employee-search"
+                placeholder="Type employee name..."
+                autocomplete="off">
+            </div>
+          ` : ''}
+
+          <select id="salary-employee-filter">
+            <option value="">All employees</option>
+            ${employeeOptions(state.employeeFilter)}
+          </select>
+
+          <input id="salary-year-filter" type="number"
+            min="2000" max="2100" placeholder="Year"
+            value="${escapeHTML(state.yearFilter)}">
+
+          <select id="salary-month-filter">
+            <option value="">All months</option>
+            ${monthNames.map((name, index) => `
+              <option value="${index + 1}"
+                ${String(index + 1) === state.monthFilter ? 'selected' : ''}>
+                ${name}
+              </option>
+            `).join('')}
+          </select>
+
+          <button type="button" class="btn-outline"
+            data-salary-action="refresh">Refresh</button>
+        </div>
+      </div>
+    `;
+
+    const tabsHTML = `
+      <div class="form-row salary-tabs">
+        <button type="button"
+          class="salary-tab ${state.view === 'obligations' ? 'salary-tab-active' : 'salary-tab-inactive'}"
+          aria-pressed="${state.view === 'obligations'}"
+          data-salary-view="obligations">Monthly Salaries</button>
+
+        <button type="button"
+          class="salary-tab ${state.view === 'rates' ? 'salary-tab-active' : 'salary-tab-inactive'}"
+          aria-pressed="${state.view === 'rates'}"
+          data-salary-view="rates">Salary Rates</button>
+
+        <button type="button"
+          class="salary-tab ${state.view === 'payments' ? 'salary-tab-active' : 'salary-tab-inactive'}"
+          aria-pressed="${state.view === 'payments'}"
+          data-salary-view="payments">Payment History</button>
+
+        <button type="button"
+          class="salary-tab ${state.view === 'calculator' ? 'salary-tab-active' : 'salary-tab-inactive'}"
+          aria-pressed="${state.view === 'calculator'}"
+          data-salary-view="calculator">Suggested Calculator</button>
+      </div>
+    `;
+
+    const statsHTML = `
+      <div class="grid">
+        <div class="stat">
+          <div class="value">${state.employees.length}</div>
+          <div class="label">Active eligible employees</div>
+        </div>
+        <div class="stat">
+          <div class="value">${formatNAD(totalDue)}</div>
+          <div class="label">Filtered amount due</div>
+        </div>
+        <div class="stat">
+          <div class="value">${formatNAD(totalPaid)}</div>
+          <div class="label">Filtered amount paid</div>
+        </div>
+        <div class="stat">
+          <div class="value">${formatNAD(totalBalance)}</div>
+          <div class="label">Outstanding balance</div>
+        </div>
+      </div>
+    `;
+
+    const rateForm = `
+      <div class="card">
+        <h2>Enter a new salary rate</h2>
+        <p>Entering a new rate automatically closes the previous open rate
+          on the day before the new effective date.</p>
+
+        ${state.employees.length ? `
+          <form id="salary-rate-form">
+            <div class="form-row">
+              <select name="employee_id" required>
+                <option value="">Select active employee</option>
+                ${employeeOptions()}
+              </select>
+
+              <input name="monthly_salary" type="number"
+                min="0.01" step="0.01" required
+                placeholder="Monthly salary (NAD)">
+
+              <input name="effective_from" type="date"
+                value="${today}" required>
+            </div>
+
+            <div class="form-row">
+              <input name="notes" type="text" maxlength="1000"
+                placeholder="Notes (optional)" style="flex:1">
+              <button type="submit" class="btn">Save salary rate</button>
+            </div>
+          </form>
+        ` : '<p>No active eligible employees are available for new salary rates.</p>'}
+      </div>
+    `;
+
+    const rateRows = rates.map(rate => `
+      <tr>
+        <td>
+          <strong>${escapeHTML(rate.full_name)}</strong><br>
+          <small>${escapeHTML(rate.employee_code)}</small>
+          ${Number(rate.is_active) === 0
+            ? '<br><span class="status-terminated">Inactive</span>' : ''}
+        </td>
+        <td>${formatNAD(rate.monthly_salary)}</td>
+        <td>${dateValue(rate.effective_from)}</td>
+        <td>${rate.effective_to ? dateValue(rate.effective_to) : 'Current / open'}</td>
+        <td>${escapeHTML(rate.notes || '-')}</td>
+        <td>${escapeHTML(rate.created_by_name || '-')}</td>
+      </tr>
+    `).join('');
+
+    const ratesHTML = `
+      ${rateForm}
+      <div class="card">
+        <h2>Salary rate history</h2>
+        <p>Historical rates remain available, including records belonging to inactive employees.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Employee</th>
+              <th>Monthly rate</th>
+              <th>Effective from</th>
+              <th>Effective to</th>
+              <th>Notes</th>
+              <th>Entered by</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rateRows || '<tr><td colspan="6">No salary rates found.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    const obligationForm = `
+      <div class="card">
+        <h2>Record monthly salary due</h2>
+        <p>Monthly amounts due are entered manually. Each employee can have only one obligation per month.</p>
+
+        ${state.employees.length ? `
+          <form id="salary-obligation-form">
+            <div class="form-row">
+              <select name="employee_id" id="salary-obligation-employee" required>
+                <option value="">Select active employee</option>
+                ${employeeOptions()}
+              </select>
+
+              <input name="salary_year" type="number"
+                min="2000" max="2100" value="${currentDate.getFullYear()}"
+                placeholder="Year" required>
+
+              <select name="salary_month" required>
+                <option value="">Select month</option>
+                ${monthNames.map((name, index) => `
+                  <option value="${index + 1}"
+                    ${index === currentDate.getMonth() ? 'selected' : ''}>
+                    ${name}
+                  </option>
+                `).join('')}
+              </select>
+            </div>
+
+            <div class="form-row">
+              <input name="amount_due" type="number" min="0.01"
+                step="0.01" required placeholder="Amount due (NAD)">
+
+              <input name="due_date" type="date" required>
+
+              <select name="salary_rate_id">
+                <option value="">No linked salary rate</option>
+              </select>
+            </div>
+
+            <div class="form-row">
+              <input name="notes" type="text" maxlength="1000"
+                placeholder="Notes (optional)" style="flex:1">
+
+              <button type="submit" class="btn">Record monthly salary</button>
+            </div>
+          </form>
+        ` : '<p>No active eligible employees are available for new obligations.</p>'}
+      </div>
+    `;
+
+    const obligationRows = obligations.map(item => {
+      const balance = Number(item.balance || 0);
+      const status = statusLabel(item.payment_status);
+
+      return `
+        <tr>
+          <td>
+            <strong>${escapeHTML(item.full_name)}</strong><br>
+            <small>${escapeHTML(item.employee_code)}</small>
+            ${Number(item.is_active) === 0
+              ? '<br><span class="status-terminated">Inactive</span>' : ''}
+          </td>
+          <td>${escapeHTML(monthLabel(item.salary_year, item.salary_month))}</td>
+          <td>${formatNAD(item.amount_due)}</td>
+          <td>${formatNAD(item.total_paid)}</td>
+          <td><strong>${formatNAD(balance)}</strong></td>
+          <td>${dateValue(item.due_date)}</td>
+          <td>${escapeHTML(status)}</td>
+          <td>
+            ${balance > 0 ? `
+              <button type="button" class="btn"
+                data-salary-action="pay"
+                data-id="${item.id}">Record payment</button>
+            ` : ''}
+            <button type="button" class="btn-outline"
+              data-salary-action="history"
+              data-id="${item.id}">History</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+
+    const paymentRows = filteredPayments().map(payment => `
+      <tr>
+        <td>
+          <strong>${escapeHTML(payment.full_name)}</strong><br>
+          <small>${escapeHTML(payment.employee_code)}</small>
+          ${Number(payment.is_active) === 0
+            ? '<br><span class="status-terminated">Inactive</span>' : ''}
+        </td>
+        <td>${escapeHTML(monthLabel(
+          payment.salary_year,
+          payment.salary_month
+        ))}</td>
+        <td>${dateValue(payment.payment_date)}</td>
+        <td><strong>${formatNAD(payment.amount_paid)}</strong></td>
+        <td>${escapeHTML(payment.payment_method || '-')}</td>
+        <td>${escapeHTML(payment.payment_reference || '-')}</td>
+        <td>${escapeHTML(payment.created_by_name || '-')}</td>
+      </tr>
+    `).join('');
+
+    const paymentsHTML = `
+      <div class="card">
+        <h2>Consolidated Payment History</h2>
+        <p>All recorded salary payments, including partial payments and historical payments for inactive employees.</p>
+
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th>Salary month</th>
+                <th>Payment date</th>
+                <th>Amount paid</th>
+                <th>Method</th>
+                <th>Reference</th>
+                <th>Recorded by</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${paymentRows || '<tr><td colspan="7">No payment records match these filters.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+    const calculatorHTML = `
+      <div class="card">
+        <h2>Suggested Salary Calculator</h2>
+
+        <p>
+          Calculate a suggested monthly salary from the employee's
+          historical salary rates. This calculation does not save
+          a salary obligation or payment.
+        </p>
+
+        <div class="form-row">
+          <select id="salary-calculator-employee">
+            <option value="">Select active employee</option>
+            ${employeeOptions(state.calculatorEmployeeId)}
+          </select>
+
+          <input id="salary-calculator-year"
+            type="number" min="2000" max="2100"
+            value="${escapeHTML(state.calculatorYear)}"
+            placeholder="Year">
+
+          <select id="salary-calculator-month">
+            ${monthNames.map((name, index) => `
+              <option value="${index + 1}"
+                ${String(index + 1) === state.calculatorMonth ? 'selected' : ''}>
+                ${name}
+              </option>
+            `).join('')}
+          </select>
+        </div>
+
+        <div class="form-row">
+          <button type="button" class="btn"
+            data-salary-action="calculate-suggestion">
+            Calculate
+          </button>
+        </div>
+      </div>
+
+      ${state.calculatorResult ? `
+        <div class="card">
+          ${state.calculatorResult.ok ? `
+            <h2>Calculation breakdown</h2>
+
+            <p>
+              Employee:
+              <strong>${escapeHTML(employeeLabel(
+                state.employees.find(item =>
+                  String(item.id) === state.calculatorResult.employeeId
+                ) || { full_name: '', employee_code: '' }
+              ))}</strong>
+            </p>
+
+            <p>
+              Salary month:
+              <strong>${escapeHTML(monthLabel(
+                state.calculatorResult.year,
+                state.calculatorResult.month
+              ))}</strong>
+            </p>
+
+            <div style="overflow-x:auto">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Rate</th>
+                    <th>Monthly salary</th>
+                    <th>Applicable days</th>
+                    <th>Calculation</th>
+                    <th>Period amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${state.calculatorResult.breakdown.map(item => `
+                    <tr>
+                      <td>${escapeHTML(String(item.rateId))}</td>
+                      <td>${formatNAD(item.monthlySalary)}</td>
+                      <td>${item.days} / ${item.daysInMonth}</td>
+                      <td>
+                        ${item.days} ÷ ${item.daysInMonth}
+                        × ${formatNAD(item.monthlySalary)}
+                      </td>
+                      <td>${formatNAD(item.amount)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+
+            <h2>
+              Suggested total: ${formatNAD(state.calculatorResult.total)}
+            </h2>
+
+            <p>
+              The final combined amount is rounded to two decimal places.
+            </p>
+
+            <button type="button" class="btn-success"
+              data-salary-action="use-suggestion">
+              Use Suggestion
+            </button>
+          ` : `
+            <h2>Calculation unavailable</h2>
+            <p class="error">
+              ${escapeHTML(state.calculatorResult.message)}
+            </p>
+          `}
+        </div>
+      ` : ''}
+    `;
+
+    const paymentForm = state.paymentId ? (() => {
+      const item = state.obligations.find(
+        row => String(row.id) === String(state.paymentId)
+      );
+
+      if (!item) return '';
+
+      const balance = Number(item.balance || 0);
+
+      return `
+        <div class="card" id="salary-payment-panel">
+          <h2>Record salary payment</h2>
+          <p><strong>${escapeHTML(item.full_name)}</strong> -
+            ${escapeHTML(monthLabel(item.salary_year, item.salary_month))}</p>
+          <p>Outstanding balance: <strong>${formatNAD(balance)}</strong></p>
+
+          <form id="salary-payment-form">
+            <div class="form-row">
+              <input name="amount_paid" type="number"
+                min="0.01" max="${balance.toFixed(2)}"
+                step="0.01" required
+                placeholder="Amount paid (NAD)">
+
+              <input name="payment_date" type="date"
+                value="${today}" required>
+
+              <select name="payment_method" required>
+                <option value="">Payment method</option>
+                <option value="cash">Cash</option>
+                <option value="bank_transfer">Bank transfer</option>
+                <option value="cheque">Cheque</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+
+            <div class="form-row">
+              <input name="payment_reference" type="text"
+                maxlength="120" placeholder="Payment reference (optional)">
+
+              <input name="notes" type="text" maxlength="1000"
+                placeholder="Notes (optional)" style="flex:1">
+            </div>
+
+            <div class="form-row">
+              <button type="submit" class="btn-success">Save payment</button>
+              <button type="button" class="btn-danger"
+                data-salary-action="close-payment">Cancel</button>
+            </div>
+          </form>
+        </div>
+      `;
+    })() : '';
+
+    let historyHTML = '';
+
+    if (state.history) {
+      const data = state.history;
+      const payments = Array.isArray(data.payments) ? data.payments : [];
+
+      historyHTML = `
+        <div class="card" id="salary-history-panel">
+          <h2>Payment history</h2>
+          <p>
+            <strong>${escapeHTML(data.obligation.full_name)}</strong>
+            ${Number(data.obligation.is_active) === 0
+              ? '<br><span class="status-terminated">Inactive</span>' : ''} -
+            ${escapeHTML(monthLabel(
+              data.obligation.salary_year,
+              data.obligation.salary_month
+            ))}
+          </p>
+          <p>Amount due: ${formatNAD(data.obligation.amount_due)}</p>
+          <p>Total paid: ${formatNAD(data.total_paid)}</p>
+          <p>Balance: ${formatNAD(data.balance)}</p>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Payment date</th>
+                <th>Amount</th>
+                <th>Method</th>
+                <th>Reference</th>
+                <th>Notes</th>
+                <th>Recorded by</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${payments.map(payment => `
+                <tr>
+                  <td>${dateValue(payment.payment_date)}</td>
+                  <td>${formatNAD(payment.amount_paid)}</td>
+                  <td>${escapeHTML(payment.payment_method)}</td>
+                  <td>${escapeHTML(payment.payment_reference || '-')}</td>
+                  <td>${escapeHTML(payment.notes || '-')}</td>
+                  <td>${escapeHTML(payment.created_by_name || '-')}</td>
+                </tr>
+              `).join('') || '<tr><td colspan="6">No payments recorded yet.</td></tr>'}
+            </tbody>
+          </table>
+
+          <button type="button" class="btn-outline"
+            data-salary-action="close-history">Close history</button>
+        </div>
+      `;
+    }
+
+    const obligationsHTML = `
+      ${obligationForm}
+      <div class="card">
+        <h2>Monthly salary obligations</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Employee</th>
+              <th>Salary month</th>
+              <th>Amount due</th>
+              <th>Paid</th>
+              <th>Balance</th>
+              <th>Due date</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${obligationRows || '<tr><td colspan="8">No monthly salary records match these filters.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+      ${paymentForm}
+      ${historyHTML}
+    `;
+
+    el.innerHTML = `
+      <h2>Salary Management</h2>
+
+      ${state.notice ? `
+        <div class="${state.noticeType === 'error' ? 'error' : 'success'}"
+          style="margin-bottom:1rem">
+          ${escapeHTML(state.notice)}
+        </div>
+      ` : ''}
+
+      ${filterHTML}
+      ${statsHTML}
+      ${tabsHTML}
+
+      ${state.loading
+        ? '<div class="card">Loading salary records...</div>'
+        : state.view === 'rates' ? ratesHTML
+        : state.view === 'payments' ? paymentsHTML
+        : state.view === 'calculator' ? calculatorHTML
+        : obligationsHTML}
+    `;
+  }
+
+  el.addEventListener('click', async event => {
+    const viewButton = event.target.closest('[data-salary-view]');
+
+    if (viewButton) {
+      state.view = viewButton.dataset.salaryView;
+      state.paymentId = null;
+      state.history = null;
+      draw();
+      return;
+    }
+
+    const button = event.target.closest('[data-salary-action]');
+    if (!button) return;
+
+    const action = button.dataset.salaryAction;
+
+    if (action === 'calculate-suggestion') {
+      state.calculatorEmployeeId =
+        el.querySelector('#salary-calculator-employee')?.value || '';
+
+      state.calculatorYear =
+        el.querySelector('#salary-calculator-year')?.value || '';
+
+      state.calculatorMonth =
+        el.querySelector('#salary-calculator-month')?.value || '';
+
+      state.calculatorResult = calculateSalarySuggestion(
+        state.calculatorEmployeeId,
+        state.calculatorYear,
+        state.calculatorMonth
+      );
+
+      setNotice(
+        state.calculatorResult.ok
+          ? 'Salary suggestion calculated. No obligation has been saved.'
+          : state.calculatorResult.message,
+        state.calculatorResult.ok ? 'success' : 'error'
+      );
+
+      draw();
+      return;
+    }
+
+    if (action === 'use-suggestion') {
+      const suggestion = state.calculatorResult;
+
+      if (!suggestion || !suggestion.ok) return;
+
+      state.view = 'obligations';
+      state.paymentId = null;
+      state.history = null;
+
+      draw();
+
+      const form = el.querySelector('#salary-obligation-form');
+
+      if (!form) {
+        setNotice('The monthly salary form is unavailable.', 'error');
+        draw();
+        return;
+      }
+
+      form.elements.namedItem('employee_id').value =
+        suggestion.employeeId;
+
+      form.elements.namedItem('salary_year').value =
+        suggestion.year;
+
+      form.elements.namedItem('salary_month').value =
+        suggestion.month;
+
+      form.elements.namedItem('amount_due').value =
+        suggestion.total.toFixed(2);
+
+      form.elements.namedItem('due_date').value = '';
+
+      const rateSelect =
+        form.elements.namedItem('salary_rate_id');
+
+      rateSelect.innerHTML = salaryRateOptions(
+        suggestion.employeeId,
+        suggestion.year,
+        suggestion.month
+      );
+
+      // Link a rate only when exactly one rate applies.
+      // Multiple-rate calculations remain unlinked.
+
+      rateSelect.value = suggestion.rateIds.length === 1
+        ? String(suggestion.rateIds[0])
+        : '';
+
+      setNotice(
+        'Suggestion transferred. Review the amount and enter the due date manually. Nothing has been saved yet.'
+      );
+
+      draw();
+
+      el.querySelector('#salary-obligation-form')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      return;
+    }
+
+    if (action === 'refresh') {
+      state.paymentId = null;
+      state.history = null;
+      setNotice('');
+      await loadData();
+      return;
+    }
+
+    if (action === 'pay') {
+      state.paymentId = button.dataset.id;
+      state.history = null;
+      draw();
+      document.getElementById('salary-payment-panel')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+
+    if (action === 'close-payment') {
+      state.paymentId = null;
+      draw();
+      return;
+    }
+
+    if (action === 'close-history') {
+      state.history = null;
+      state.historyId = null;
+      draw();
+      return;
+    }
+
+    if (action === 'history') {
+      try {
+        const result = await api(
+          `/salary/obligations/${encodeURIComponent(button.dataset.id)}/payments`
+        );
+
+        state.history = result.data;
+        state.historyId = button.dataset.id;
+        draw();
+
+        document.getElementById('salary-history-panel')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (error) {
+        setNotice(error.message, 'error');
+        draw();
+      }
+    }
+  }, { signal });
+
+  el.addEventListener('input', event => {
+    const target = event.target;
+
+    if (target.id === 'salary-payment-employee-search') {
+      const query = target.value.trim().toLowerCase();
+      const employeeSelect = el.querySelector('#salary-employee-filter');
+
+      if (employeeSelect) {
+        Array.from(employeeSelect.options).forEach(option => {
+          if (!option.value) {
+            option.hidden = false;
+            return;
+          }
+
+          option.hidden = !option.textContent.toLowerCase().includes(query);
+        });
+      }
+    }
+  }, { signal });
+
+  el.addEventListener('change', event => {
+    const target = event.target;
+
+    if (target.id === 'salary-employee-filter') {
+      state.employeeFilter = target.value;
+      draw();
+    }
+
+    if (
+      ['employee_id', 'salary_year', 'salary_month'].includes(target.name) &&
+      target.closest('#salary-obligation-form')
+    ) {
+      const form = target.closest('#salary-obligation-form');
+      const employeeId = form.querySelector('[name="employee_id"]').value;
+      const year = form.querySelector('[name="salary_year"]').value;
+      const month = form.querySelector('[name="salary_month"]').value;
+      const rateSelect = form.querySelector('[name="salary_rate_id"]');
+
+      if (rateSelect) {
+        rateSelect.innerHTML = salaryRateOptions(employeeId, year, month);
+      }
+    }
+
+    if (target.id === 'salary-year-filter') {
+      state.yearFilter = target.value;
+      draw();
+    }
+
+    if (target.id === 'salary-month-filter') {
+      state.monthFilter = target.value;
+      draw();
+    }
+  }, { signal });
+
+  el.addEventListener('submit', async event => {
+    const form = event.target;
+
+    if (![
+      'salary-rate-form',
+      'salary-obligation-form',
+      'salary-payment-form'
+    ].includes(form.id)) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const values = Object.fromEntries(new FormData(form).entries());
+
+    try {
+      let result;
+
+      if (form.id === 'salary-rate-form') {
+        result = await api('/salary/rates', {
+          method: 'POST',
+          body: JSON.stringify({
+            employee_id: values.employee_id,
+            monthly_salary: values.monthly_salary,
+            effective_from: values.effective_from,
+            notes: values.notes
+          })
+        });
+      }
+
+      if (form.id === 'salary-obligation-form') {
+        result = await api('/salary/obligations', {
+          method: 'POST',
+          body: JSON.stringify({
+            employee_id: values.employee_id,
+            salary_year: values.salary_year,
+            salary_month: values.salary_month,
+            amount_due: values.amount_due,
+            due_date: values.due_date,
+            salary_rate_id: values.salary_rate_id || null,
+            notes: values.notes
+          })
+        });
+      }
+
+      if (form.id === 'salary-payment-form') {
+        result = await api(
+          `/salary/obligations/${encodeURIComponent(state.paymentId)}/payments`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              amount_paid: values.amount_paid,
+              payment_date: values.payment_date,
+              payment_method: values.payment_method,
+              payment_reference: values.payment_reference,
+              notes: values.notes
+            })
+          }
+        );
+
+        state.paymentId = null;
+      }
+
+      setNotice(result.message || 'Salary record saved successfully.');
+      state.history = null;
+      await loadData();
+    } catch (error) {
+      setNotice(error.message || 'The salary operation failed.', 'error');
+      draw();
+    }
+  }, { signal });
+
+  draw();
+  await loadData();
+}
 // ---------- Announcements ----------
 async function renderAnnouncements(el) {
-  const isManagement =
-    currentUser.role === 'admin' || currentUser.role === 'manager';
+  const canViewManagement = canViewManagementPages();
+  const canEditManagement = canEditManagementPages();
 
   el.innerHTML = `
     <h2 style="margin-bottom:1rem">Announcements</h2>
 
-    ${isManagement ? `
+    ${canEditManagement ? `
       <div class="card">
         <h2>Publish Announcement</h2>
         <form id="announcement-form">
@@ -736,14 +2009,14 @@ async function renderAnnouncements(el) {
                 </button>
               ` : ''}
 
-              ${isManagement ? `
+              ${canViewManagement ? `
                 <button type="button" class="btn" data-announcement-readers="${Number(item.id)}">
                   View Readership
                 </button>
               ` : ''}
             </div>
 
-            ${isManagement ? `
+            ${canViewManagement ? `
               <div id="announcement-readers-${Number(item.id)}" style="margin-top:1rem;"></div>
             ` : ''}
           </article>
@@ -769,7 +2042,7 @@ async function renderAnnouncements(el) {
         });
       });
 
-      if (isManagement) {
+      if (canViewManagement) {
         listElement.querySelectorAll('[data-announcement-readers]').forEach(button => {
           button.addEventListener('click', async () => {
             const id = button.dataset.announcementReaders;
@@ -886,7 +2159,7 @@ async function renderAnnouncements(el) {
 
   refreshButton.addEventListener('click', loadAnnouncements);
 
-  if (isManagement) {
+  if (canEditManagement) {
     const form = document.getElementById('announcement-form');
     const messageElement = document.getElementById('announcement-form-message');
     const submitButton = document.getElementById('announcement-submit');
@@ -932,7 +2205,7 @@ async function renderAnnouncements(el) {
 
 // ---------- Change Password ----------
 async function renderChangePassword(el) {
-  if (!currentUser || !['admin', 'guard', 'manager'].includes(currentUser.role)) {
+  if (!currentUser || !['admin', 'guard', 'manager', 'management_viewer'].includes(currentUser.role)) {
     el.innerHTML = '<p class="error">Access denied.</p>';
     return;
   }
@@ -1258,6 +2531,9 @@ async function renderDashboard(el) {
 
 // ---------- Guards ----------
 async function renderGuards(el) {
+  const canEditManagement = canEditManagementPages();
+  const isAdmin = currentUser && currentUser.role === 'admin';
+
   el.innerHTML = `
     <div class="card">
       <div style="display:flex;justify-content:space-between;
@@ -1268,7 +2544,7 @@ async function renderGuards(el) {
         </button>
       </div>
 
-      ${currentUser && currentUser.role === 'admin' ? `
+      ${currentUser && ['admin'].includes(currentUser.role) ? `
         <div style="border:1px solid var(--border);padding:16px;margin:16px 0;border-radius:8px;">
           <h3>Create Administrator</h3>
           <div class="form-row" style="flex-wrap:wrap;gap:8px;">
@@ -1282,6 +2558,7 @@ async function renderGuards(el) {
           <p id="admin-create-status" role="status" style="color:var(--muted);"></p>
         </div>
       ` : ''}
+      ${canEditManagement ? `
       <div class="form-row" style="flex-wrap:wrap;gap:8px;">
         <input id="g-name" placeholder="Full Name" required />
         <input id="g-phone" placeholder="Phone (+264...)" required />
@@ -1295,6 +2572,27 @@ async function renderGuards(el) {
           Register Guard
         </button>
       </div>
+      ` : ''}
+
+      ${isAdmin ? `
+        <div style="border:1px solid var(--border);padding:16px;margin:16px 0;border-radius:8px;">
+          <h3>Create Read-Only Management Staff Account</h3>
+          <div class="form-row" style="flex-wrap:wrap;gap:8px;">
+            <input id="staff-name" placeholder="Full Name" maxlength="120" required />
+            <input id="staff-phone" placeholder="Phone (+264...)" maxlength="20" required />
+            <input id="staff-email" type="email" placeholder="Email Address (Optional)" />
+            <input
+  id="staff-job-title"
+  type="text"
+  placeholder="Management Position (e.g. Assistant Manager)"
+  maxlength="100"
+  required
+/>
+            <button class="btn" id="btn-create-staff" type="button">Create Management Staff Account</button>
+          </div>
+          <p id="staff-create-status" role="status" style="color:var(--muted);"></p>
+        </div>
+      ` : ''}
 
       <div style="display:flex;gap:10px;align-items:center;
         flex-wrap:wrap;margin:16px 0;">
@@ -1322,7 +2620,7 @@ async function renderGuards(el) {
             <tr>
               <th>Code</th><th>Name</th><th>Phone</th><th>Email</th>
               <th>DOB</th><th>Hired</th><th>Rate</th><th>Status</th>
-              <th>On Access Since</th><th>Actions</th>
+              <th>On Access Since</th><th>${canEditManagement ? 'Actions' : 'Access'}</th>
             </tr>
           </thead>
           <tbody id="guards-table-body"></tbody>
@@ -1458,20 +2756,22 @@ async function renderGuards(el) {
         true, 1, '1'
       ].includes(guard.is_active);
 
-      const actions = active
-        ? `<button class="btn"
-             style="background:#f59e0b;color:#000;margin:2px"
-             onclick="suspendGuard(${id}, '${escapeHTML(guard.full_name)}')">
-             Put on Access
-           </button>`
-        : `<button class="btn-success" style="margin:2px"
-             onclick="reinstateGuard(${id}, '${escapeHTML(guard.full_name)}')">
-             Reinstate
-           </button>
-           <button class="btn-danger" style="margin:2px"
-             onclick="fireGuard(${id}, '${escapeHTML(guard.full_name)}')">
-             Fire
-           </button>`;
+      const actions = !canEditManagement
+        ? '<span style="color:var(--muted);">Read only</span>'
+        : active
+          ? `<button class="btn"
+               style="background:#f59e0b;color:#000;margin:2px"
+               onclick="suspendGuard(${id}, '${escapeHTML(guard.full_name)}')">
+               Put on Access
+             </button>`
+          : `<button class="btn-success" style="margin:2px"
+               onclick="reinstateGuard(${id}, '${escapeHTML(guard.full_name)}')">
+               Reinstate
+             </button>
+             <button class="btn-danger" style="margin:2px"
+               onclick="fireGuard(${id}, '${escapeHTML(guard.full_name)}')">
+               Fire
+             </button>`;
 
       return `
         <tr>
@@ -1489,12 +2789,14 @@ async function renderGuards(el) {
             ? escapeHTML(dateOnly(guard.suspended_at)) : '-'}</td>
           <td style="white-space:nowrap;">
             ${actions}
-            <button class="btn" style="margin:2px"
-              onclick="resetPassword(${id}, '${escapeHTML(guard.full_name)}')">
-              Reset Password
-            </button>
-            <button class="btn" style="margin:2px"
-              onclick="editGuard(${id})">Edit</button>
+            ${canEditManagement ? `
+              <button class="btn" style="margin:2px"
+                onclick="resetPassword(${id}, '${escapeHTML(guard.full_name)}')">
+                Reset Password
+              </button>
+              <button class="btn" style="margin:2px"
+                onclick="editGuard(${id})">Edit</button>
+            ` : ''}
           </td>
         </tr>`;
     }).join('');
@@ -1534,7 +2836,8 @@ async function renderGuards(el) {
   });
   refreshButton.addEventListener('click', refreshGuards);
 
-  document.getElementById('btn-add-guard').onclick = async () => {
+  const addGuardButton = document.getElementById('btn-add-guard');
+  if (addGuardButton) addGuardButton.onclick = async () => {
     const full_name = document.getElementById('g-name').value.trim();
     const phone = document.getElementById('g-phone').value.trim();
     const email = document.getElementById('g-email').value.trim();
@@ -1698,6 +3001,57 @@ if (full_name.length > 120) {
     };
   }
 
+
+  const createStaffButton = document.getElementById('btn-create-staff');
+  if (createStaffButton) {
+    createStaffButton.onclick = async () => {
+      const full_name = document.getElementById('staff-name').value.trim();
+      const phone = document.getElementById('staff-phone').value.trim();
+      const email = document.getElementById('staff-email').value.trim();
+      const job_title = document.getElementById('staff-job-title').value;
+      const status = document.getElementById('staff-create-status');
+
+      if (!full_name || !phone || !job_title) {
+        alert('Please enter the staff member’s name, phone number and job title.');
+        return;
+      }
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        alert('Please enter a valid email address, or leave it blank.');
+        return;
+      }
+
+      createStaffButton.disabled = true;
+      createStaffButton.textContent = 'Creating...';
+      status.textContent = 'Creating read-only management account...';
+
+      try {
+        const result = await api('/users/create-management-viewer', {
+          method: 'POST',
+          body: JSON.stringify({ full_name, phone, email: email || null, job_title })
+        });
+        const account = result.data;
+        ['staff-name', 'staff-phone', 'staff-email', 'staff-job-title']
+          .forEach(id => { document.getElementById(id).value = ''; });
+        status.textContent = result.message || 'Management staff account created.';
+        alert(
+          `Read-only management account created.\n\n` +
+          `Employee Code: ${account.employee_code}\n` +
+          `Name: ${account.full_name}\n` +
+          `Job Title: ${account.job_title}\n` +
+          `Email: ${account.email || 'Not provided'}\n\n` +
+          (account.email_sent
+            ? `Login details emailed to: ${account.notification_email}`
+            : `Email delivery failed. Temporary Password: ${account.temp_password}\n\nProvide the password securely.`)
+        );
+      } catch (error) {
+        status.textContent = `Account creation failed: ${error.message}`;
+        alert(error.message);
+      } finally {
+        createStaffButton.disabled = false;
+        createStaffButton.textContent = 'Create Management Staff Account';
+      }
+    };
+  }
 
   await refreshGuards();
 }
@@ -1872,6 +3226,7 @@ window.resetPassword = async (id, name = '') => {
 
 // ---------- Sites ----------
 async function renderSites(el) {
+  const canEditManagement = canEditManagementPages();
   let allSites = [];
   let editingSiteId = null;
 
@@ -1887,6 +3242,7 @@ async function renderSites(el) {
     <div class="card">
       <h2>Sites</h2>
 
+      ${canEditManagement ? `
       <div class="form-row">
         <input id="s-code-preview" placeholder="Automatic site code"
           readonly title="Generated automatically" />
@@ -1906,6 +3262,7 @@ async function renderSites(el) {
         <button class="btn" id="btn-save-site-edit">Save Changes</button>
         <button class="btn" id="btn-cancel-site-edit">Cancel</button>
       </div>
+      ` : ''}
 
       <div class="form-row">
         <div id="site-search-wrap" style="position:relative;flex:1;min-width:220px;">
@@ -2026,16 +3383,20 @@ async function renderSites(el) {
       const id = Number(site.id);
       const status = String(site.status || '').toLowerCase();
 
-      let actions = `<button class="btn" onclick="editSite(${id})">Edit</button>`;
+      let actions = canEditManagement
+        ? `<button class="btn" onclick="editSite(${id})">Edit</button>`
+        : '<span style="color:var(--muted);">Read only</span>';
 
-      if (status === 'approved') {
+      if (canEditManagement && status === 'approved') {
         actions += `<button class="btn-danger" onclick="terminateSite(${id})">Terminate</button>`;
-      } else if (status === 'terminated') {
+      } else if (canEditManagement && status === 'terminated') {
         actions += `<button class="btn" onclick="approveSite(${id})">Restore / Approve</button>`;
       }
 
-      actions += `<button class="btn-danger" style="margin-left:5px"
-        onclick="permanentlyRemoveSite(${id})">Permanently Remove</button>`;
+      if (canEditManagement) {
+        actions += `<button class="btn-danger" style="margin-left:5px"
+          onclick="permanentlyRemoveSite(${id})">Permanently Remove</button>`;
+      }
 
       return `
         <tr>
@@ -2091,13 +3452,15 @@ async function renderSites(el) {
     editPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
 
-  document.getElementById('btn-cancel-site-edit').onclick = () => {
+  const cancelSiteEditButton = document.getElementById('btn-cancel-site-edit');
+  if (cancelSiteEditButton) cancelSiteEditButton.onclick = () => {
     editingSiteId = null;
     editPanel.style.display = 'none';
     message.textContent = 'Editing cancelled.';
   };
 
-  document.getElementById('btn-save-site-edit').onclick = async () => {
+  const saveSiteEditButton = document.getElementById('btn-save-site-edit');
+  if (saveSiteEditButton) saveSiteEditButton.onclick = async () => {
     if (editingSiteId === null) return;
 
     const name = document.getElementById('edit-site-name').value.trim();
@@ -2138,10 +3501,10 @@ async function renderSites(el) {
 
   document.getElementById('btn-refresh-sites').onclick = async () => {
     await loadSites();
-    await loadNextCode();
+    if (canEditManagement) await loadNextCode();
   };
 
-  addButton.onclick = async () => {
+  if (addButton) addButton.onclick = async () => {
     const name = document.getElementById('s-name').value.trim();
     const town = document.getElementById('s-town').value.trim();
     const address = document.getElementById('s-address').value.trim();
@@ -2173,7 +3536,7 @@ async function renderSites(el) {
   };
 
   await loadSites();
-  await loadNextCode();
+  if (canEditManagement) await loadNextCode();
 }
 
 window.approveSite = async id => {
@@ -2336,7 +3699,8 @@ async function renderAssignments(el) {
 
 // ---------- Shifts ----------
 async function renderShifts(el) {
-  const isManager = ['admin', 'manager'].includes(currentUser.role);
+  const isManager = canViewManagementPages();
+  const canEditManagement = canEditManagementPages();
   let guards = [];
   let sites = [];
 
@@ -2363,7 +3727,7 @@ async function renderShifts(el) {
   <button class="btn" id="btn-toggle-shifts" type="button" aria-expanded="true" style="text-align:left;white-space:normal;min-height:100px;padding:20px;border-radius:12px;">
     <strong style="display:block;font-size:16px;margin-bottom:8px;">Shifts</strong>
     <span>7 Day → 7 Night → 1 Off</span>
-    <span style="display:block;margin-top:8px;font-size:12px;">Assign guards and manage duties</span>
+    <span style="display:block;margin-top:8px;font-size:12px;">${canEditManagement ? 'Assign guards and manage duties' : 'View scheduled shifts'}</span>
   </button>
 
   <button class="btn" id="btn-toggle-coverage" type="button" aria-expanded="false" style="text-align:left;white-space:normal;min-height:100px;padding:20px;border-radius:12px;">
@@ -2409,18 +3773,18 @@ async function renderShifts(el) {
             `).join('')}
           </select>
 
-          <div class="shift-date-field shifts-generator-date-field"><span aria-hidden="true">Select Date</span><input type="date" id="sh-start" aria-label="Select Date" title="Select the starting date for the 7 Day, 7 Night, 1 Off shift cycle." /></div>
+          <div class="shift-date-field shifts-generator-date-field"><span aria-hidden="true">Select Date</span><input type="date" id="sh-start" aria-label="Select Date" title="Select the starting date for the 7 Day, 7 Night, 1 Off shift cycle." ${canEditManagement ? '' : 'disabled'} /></div>
 
           <input type="number" id="sh-cycles" value="1"
             min="1" max="12" style="width:80px"
-            title="Number of 15-day cycles" />
+            title="Number of 15-day cycles" ${canEditManagement ? '' : 'disabled'} />
 
-          <button class="btn" id="btn-gen-shifts" type="button">
+          <button class="btn" id="btn-gen-shifts" type="button" ${canEditManagement ? '' : 'disabled'}>
             Generate 7-7-1 Shifts
           </button>
         </div>
 
-        <div class="form-row shifts-manual-assignment-row" style="align-items:center;gap:12px;flex-wrap:wrap;">
+        <fieldset class="form-row shifts-manual-assignment-row" ${canEditManagement ? '' : 'disabled'} style="border:0;padding:0;margin:0;align-items:center;gap:12px;flex-wrap:wrap;min-width:0;">
           <strong style="flex-basis:100%;">Manual Shift Assignment</strong>
 
           <div class="shifts-guard-search-wrap" style="display:flex;flex-direction:column;gap:5px;flex:0 1 300px;min-width:min(260px, 100%);max-width:100%;">
@@ -2461,9 +3825,10 @@ async function renderShifts(el) {
           <button class="btn" id="btn-manual-shift" type="button">
             Save Manual Shift
           </button>
-        </div>
+        </fieldset>
 
         <p id="sh-manual-message" aria-live="polite"></p>
+        ${canEditManagement ? '' : '<p style="color:var(--muted);">Read-only management access: shift assignment and editing are disabled.</p>'}
         <div style="display:flex;flex-direction:column;gap:5px;width:100%;margin:16px 0;">
           <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:300px;flex:none;">
             <label for="sh-search"
@@ -2739,7 +4104,7 @@ if (selectedDate &&
     <td>${escapeHTML(s.end_time ? String(s.end_time).replace('T', ' ').slice(0, 16) : '-')}</td>
     <td>${escapeHTML(s.status || '-')}</td>
     <td>
-      ${isManager ? `
+      ${canEditManagement ? `
         ${String(s.shift_type || '').toLowerCase() === 'off' && String(s.status || '').toLowerCase() === 'scheduled' ? `
           <button
             type="button"
@@ -2773,7 +4138,7 @@ if (selectedDate &&
           Remove Shift
         </button>
         ` : ''}
-      ` : '-'}
+      ` : (isManager ? '<span style="color:var(--muted);">Read only</span>' : '-')}
     </td>
   </tr>
 `).join('') || `
@@ -3608,6 +4973,7 @@ if (isManager) {
 // ---------- Attendance ----------
 async function renderAttendance(el) {
   const isGuard = currentUser.role === 'guard';
+  const canEditManagement = canEditManagementPages();
   const path = isGuard ? '/attendance/my' : '/attendance';
 
   const data = await api(path);
@@ -3617,7 +4983,7 @@ async function renderAttendance(el) {
     <div class="card">
       <h2>Attendance Records</h2>
 
-      ${!isGuard ? `
+      ${canEditManagement ? `
         <div style="margin-bottom:1.5rem;padding:1rem;border:1px solid var(--border);border-radius:8px;">
           <h3>Attendance Visibility</h3>
 
@@ -3678,7 +5044,7 @@ async function renderAttendance(el) {
     </div>
   `;
 
-  if (!isGuard) {
+  if (canEditManagement) {
     const dateInput = document.getElementById('attendance-visible-from');
     const applyButton = document.getElementById('apply-attendance-date');
 
@@ -4276,6 +5642,7 @@ async function renderPayroll(el) {
 // ---------- Incident Reports ----------
 async function renderIncidents(el) {
   const isGuard = currentUser.role === 'guard';
+  const canEditManagement = canEditManagementPages();
 
   // GUARD: INCIDENT SUBMISSION FORM
   if (isGuard) {
@@ -4630,12 +5997,14 @@ async function renderIncidents(el) {
                 : '<p><strong>Attachments:</strong> None</p>'
             }
 
-            <button
-              type="button"
-              class="btn-success"
-              data-clear-incident="${escapeHTML(report.id)}">
-              CLEAR THIS REPORT
-            </button>
+            ${canEditManagement ? `
+              <button
+                type="button"
+                class="btn-success"
+                data-clear-incident="${escapeHTML(report.id)}">
+                CLEAR THIS REPORT
+              </button>
+            ` : '<p style="color:var(--muted);">Read-only access</p>'}
 
           </div>
         `;
@@ -5010,7 +6379,8 @@ async function renderClock(el) {
       navigator.geolocation.getCurrentPosition(
         pos => resolve({
           latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude
+          longitude: pos.coords.longitude,
+          accuracy_m: pos.coords.accuracy
         }),
         () => resolve({}),
         { enableHighAccuracy: true, timeout: 8000 }
@@ -5141,6 +6511,13 @@ async function renderClock(el) {
     }
   }
 })();
+
+
+
+
+
+
+
 
 
 

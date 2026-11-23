@@ -13,6 +13,7 @@ function publishAttendanceChange(data) {
     const canReceive =
       user.role === 'admin' ||
       user.role === 'manager' ||
+
       Number(user.id) === Number(data.guard_id);
 
     if (!canReceive) continue;
@@ -40,6 +41,7 @@ data: ${JSON.stringify(data)}
     const canReceive =
       user.role === 'admin' ||
       user.role === 'manager' ||
+
       Number(user.id) === Number(data.guard_id);
 
     if (!canReceive) continue;

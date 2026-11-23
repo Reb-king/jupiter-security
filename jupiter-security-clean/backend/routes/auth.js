@@ -24,7 +24,7 @@ router.post('/login', async (req, res) => {
     }
 
     const [rows] = await pool.query(
-      `SELECT id, employee_code, full_name, role,
+      `SELECT id, employee_code, full_name, role, job_title,
               password_hash, is_active, hourly_rate
        FROM users
        WHERE employee_code = ?`,
@@ -77,6 +77,7 @@ router.post('/login', async (req, res) => {
         username: user.employee_code,
         full_name: user.full_name,
         role: user.role,
+        job_title: user.job_title,
         hourly_rate: user.hourly_rate
       }
     });
@@ -94,7 +95,7 @@ router.post('/login', async (req, res) => {
 router.get('/me', authenticate, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      'SELECT id, employee_code, full_name, phone, email, role, hourly_rate, is_active FROM users WHERE id = ?',
+      'SELECT id, employee_code, full_name, phone, email, role, job_title, hourly_rate, is_active FROM users WHERE id = ?',
       [req.user.id]
     );
 

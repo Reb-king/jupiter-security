@@ -2,7 +2,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, authorizeManagementRead, authorizeManagementEdit } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -86,7 +86,7 @@ async function getNextSiteCode(connection = pool) {
 router.get(
   '/next-code/preview',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       const site_code = await getNextSiteCode();
@@ -106,7 +106,7 @@ router.get(
 );
 
 // GET all sites; supports optional status and name search.
-router.get('/', authenticate, async (req, res) => {
+router.get('/', authenticate, authorizeManagementRead, async (req, res) => {
   try {
     const { status, search } = req.query;
     let sql = 'SELECT * FROM sites WHERE 1=1';
@@ -147,7 +147,7 @@ router.get('/', authenticate, async (req, res) => {
 });
 
 // GET one site by ID.
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', authenticate, authorizeManagementRead, async (req, res) => {
   try {
     const [rows] = await pool.query(
       'SELECT * FROM sites WHERE id = ?',
@@ -179,7 +179,7 @@ router.get('/:id', authenticate, async (req, res) => {
 router.post(
   '/',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     let connection;
 
@@ -289,7 +289,7 @@ const values = [
 router.put(
   '/:id',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       if (!(await requireCurrentPassword(req, res))) return;
@@ -395,7 +395,7 @@ router.put(
 router.post(
   '/:id/approve',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       const dateColumns = await getSiteDateColumnSupport();
@@ -443,7 +443,7 @@ router.post(
 router.post(
   '/:id/terminate',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       if (!(await requireCurrentPassword(req, res))) return;
@@ -489,7 +489,7 @@ router.post(
 router.delete(
   '/:id',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       if (!(await requireCurrentPassword(req, res))) return;

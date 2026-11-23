@@ -1731,3 +1731,85 @@ input[id^="announcement-reader-search-"] {
     gap: 8px;
   }
 }
+/* ========== SALARY MANAGEMENT TABS AND EMPLOYEE SEARCH ========== */
+.salary-tabs {
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.salary-tab {
+  padding: 0.65rem 1rem;
+  border-radius: 8px;
+  border: 1px solid #94a3b8;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.salary-tab-active {
+  background: #15803d;
+  border-color: #15803d;
+  color: #ffffff;
+}
+
+.salary-tab-active:hover {
+  background: #166534;
+  border-color: #166534;
+}
+
+.salary-tab-inactive {
+  background: #ffffff;
+  border-color: #94a3b8;
+  color: #1e293b;
+}
+
+.salary-tab-inactive:hover {
+  background: #e2e8f0;
+  border-color: #64748b;
+}
+
+.salary-employee-search {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 220px;
+}
+
+.salary-employee-search label {
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.salary-employee-search input {
+  width: 100%;
+  min-width: 220px;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: #ffffff;
+}
+
+.salary-employee-search input:focus {
+  outline: 2px solid #16a34a;
+  outline-offset: 1px;
+}
+
+@media (max-width: 600px) {
+  .salary-tabs {
+    gap: 0.45rem;
+  }
+
+  .salary-tab {
+    flex: 1 1 45%;
+  }
+
+  .salary-employee-search,
+  .salary-employee-search input {
+    width: 100%;
+    min-width: 0;
+  }
+}

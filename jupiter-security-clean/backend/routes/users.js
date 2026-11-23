@@ -3,7 +3,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 const crypto = require('crypto');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, authorizeManagementRead, authorizeManagementEdit } = require('../middleware/auth');
 const nodemailer = require('nodemailer');
 
 const mailer = nodemailer.createTransport({
@@ -52,6 +52,10 @@ async function createUserWithEmployeeCode(connection, role, insertUser) {
     guard: {
       prefix: 'JUP-',
       lock: 'JUP_GUARD_CODE_LOCK'
+    },
+    management_viewer: {
+      prefix: 'JUP-STAFF-',
+      lock: 'JUP_STAFF_CODE_LOCK'
     }
   };
 
@@ -182,13 +186,13 @@ async function sendTemporaryPasswordEmail({
 router.get(
   '/',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementRead,
   async (req, res) => {
     try {
       const { role, active } = req.query;
 
       let sql = `
-        SELECT id, employee_code, full_name, phone, email, role,
+        SELECT id, employee_code, full_name, phone, email, role, job_title,
                hourly_rate, is_active, date_of_birth, hired_at,
                suspended_at, created_at
         FROM users
@@ -235,10 +239,13 @@ router.get(
 // GET single user
 router.get('/:id', authenticate, async (req, res) => {
   try {
-    if (
-      req.user.role === 'guard' &&
-      parseInt(req.params.id, 10) !== req.user.id
-    ) {
+    const isSelf = Number(req.params.id) === Number(req.user.id);
+    const canViewManagement =
+      req.user.role === 'admin' ||
+      req.user.role === 'management_viewer' ||
+      (req.user.role === 'manager' && req.user.employee_code === 'JUP-MD-001');
+
+    if (!isSelf && !canViewManagement) {
       return res.status(403).json({
         success: false,
         message: 'Forbidden.'
@@ -246,7 +253,7 @@ router.get('/:id', authenticate, async (req, res) => {
     }
 
     const [rows] = await pool.query(
-      `SELECT id, employee_code, full_name, phone, email, role,
+      `SELECT id, employee_code, full_name, phone, email, role, job_title,
               hourly_rate, is_active, date_of_birth, hired_at,
               suspended_at, created_at
        FROM users
@@ -285,7 +292,7 @@ router.get('/:id', authenticate, async (req, res) => {
 router.post(
   '/',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     let connection;
     let transactionStarted = false;
@@ -294,7 +301,6 @@ router.post(
         full_name,
         phone,
         email,
-        role,
         hourly_rate,
         date_of_birth,
         hired_at
@@ -354,9 +360,9 @@ router.post(
         }
       }
 
-      const allowedRoles = ['guard', 'manager'];
-      const userRole =
-        role && allowedRoles.includes(role) ? role : 'guard';
+      // Management Viewer accounts use the separate Administrator-only route.
+      // The general registration endpoint is limited to guards.
+      const userRole = 'guard';
 
             // Generate and hash a random temporary password.
       const tempPassword =
@@ -694,11 +700,146 @@ router.post(
 );
 
 
+/* POST create a read-only management staff account - Administrator only */
+router.post(
+  '/create-management-viewer',
+  authenticate,
+  authorize('admin'),
+  async (req, res) => {
+    let connection;
+    let transactionStarted = false;
+
+    try {
+      const { full_name, phone, email, job_title } = req.body;
+      const normalizedJobTitle =
+  typeof job_title === 'string' ? job_title.trim() : '';
+
+if (
+  !normalizedJobTitle ||
+  normalizedJobTitle.length > 100 ||
+  /^(admin|administrator|manager)$/i.test(normalizedJobTitle)
+) {
+  return res.status(400).json({
+    success: false,
+    message: 'Enter a valid management position. Admin, Administrator and Manager are reserved titles.'
+  });
+}
+
+      if (typeof full_name !== 'string' || !full_name.trim() || full_name.trim().length > 120) {
+        return res.status(400).json({ success: false, message: 'Enter a valid full name.' });
+      }
+
+      if (typeof phone !== 'string' || !phone.trim() || phone.trim().length > 20) {
+        return res.status(400).json({ success: false, message: 'Enter a valid phone number.' });
+      }
+
+
+      let normalizedEmail = null;
+      if (email !== undefined && email !== null && email !== '') {
+        if (typeof email !== 'string') {
+          return res.status(400).json({ success: false, message: 'Email address must be text.' });
+        }
+        if (email.trim()) {
+          normalizedEmail = email.trim();
+          if (normalizedEmail.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+            return res.status(400).json({ success: false, message: 'Enter a valid email address.' });
+          }
+        }
+      }
+
+      const tempPassword = `Jup-${crypto.randomBytes(12).toString('base64url')}`;
+      const hash = await bcrypt.hash(tempPassword, 10);
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      transactionStarted = true;
+
+      const { employee_code, result } = await createUserWithEmployeeCode(
+        connection,
+        'management_viewer',
+        async generatedCode => {
+          const [insertResult] = await connection.query(
+            `INSERT INTO users
+              (employee_code, full_name, phone, email, password_hash,
+               role, job_title, hourly_rate, is_active)
+             VALUES (?, ?, ?, ?, ?, 'management_viewer', ?, 0, 1)`,
+            [generatedCode, full_name.trim(), phone.trim(), normalizedEmail, hash, normalizedJobTitle]
+          );
+          return insertResult;
+        }
+      );
+
+      await connection.commit();
+      transactionStarted = false;
+      connection.release();
+      connection = null;
+
+      const fallbackEmail = 'jupiter.security26@gmail.com';
+      const notificationEmail = normalizedEmail || fallbackEmail;
+      const usedCompanyFallback = !normalizedEmail;
+      let emailSent = false;
+
+      try {
+        emailSent = await sendTemporaryPasswordEmail({
+          email: notificationEmail,
+          fullName: full_name.trim(),
+          employeeCode: employee_code,
+          tempPassword,
+          subject: 'Your Jupiter Security Management System Login Details',
+          actionDescription: 'has been created as a read-only management account'
+        });
+      } catch (mailError) {
+        console.error('Management staff registration email failed:', mailError.message);
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: emailSent
+          ? (usedCompanyFallback
+            ? 'Management staff account created. Login details emailed to the company notification address.'
+            : 'Management staff account created and login details emailed successfully.')
+          : 'Management staff account created, but email delivery failed. Provide the temporary password securely.',
+        data: {
+          id: result.insertId,
+          employee_code,
+          full_name: full_name.trim(),
+          phone: phone.trim(),
+          email: normalizedEmail,
+          role: 'management_viewer',
+          job_title: normalizedJobTitle,
+          email_sent: emailSent,
+          notification_email: notificationEmail,
+          used_company_fallback: usedCompanyFallback,
+          ...((usedCompanyFallback || !emailSent) ? { temp_password: tempPassword } : {})
+        }
+      });
+    } catch (err) {
+      if (connection && transactionStarted) {
+        try {
+          await connection.rollback();
+        } catch (rollbackErr) {
+          console.error('Management staff registration rollback failed:', rollbackErr.code || 'Unexpected error');
+          discardConnection(connection);
+        }
+      }
+
+      if (connection && !discardedConnections.has(connection)) connection.release();
+
+      if (err.code === 'ER_DUP_ENTRY') {
+        return res.status(409).json({ success: false, message: 'The generated employee code or email already exists. Please retry or use another email address.' });
+      }
+
+      console.error('Management staff registration failed:', err.code || err.message);
+      return res.status(500).json({ success: false, message: 'Management staff account creation failed.' });
+    }
+  }
+);
+
+
 // PUT update guard details
 router.put(
   '/:id',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       const {
@@ -858,7 +999,7 @@ router.put(
 router.put(
   '/:id/suspend',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       const { password } = req.body;
@@ -987,7 +1128,7 @@ router.put(
 router.put(
   '/:id/reinstate',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       const { password } = req.body;
@@ -1061,7 +1202,7 @@ router.put(
 router.delete(
   '/:id/fire',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       const { password } = req.body;
@@ -1217,7 +1358,7 @@ router.delete(
 router.post(
   '/:id/reset-password',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       const { password } = req.body;
@@ -1341,16 +1482,16 @@ router.post(
 );
 
 /**
- * Allow authenticated administrators and guards to change their own password.
+ * Allow authenticated administrators, managers, management viewers and guards to change their own password.
  */
 router.post(
   '/change-password',
   authenticate,
-  authorize('admin', 'guard', 'manager'),
+  authorize('admin', 'guard', 'manager', 'management_viewer'),
   async (req, res) => {
     try {
       const { currentPassword, newPassword } = req.body;
-      const allowedRoles = ['admin', 'guard', 'manager'];
+      const allowedRoles = ['admin', 'guard', 'manager', 'management_viewer'];
       const userRole = req.user.role;
 
       if (!allowedRoles.includes(userRole)) {
@@ -1448,6 +1589,3 @@ router.post(
   }
 );
 module.exports = router;
-
-
-

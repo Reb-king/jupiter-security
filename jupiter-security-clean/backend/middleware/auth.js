@@ -17,7 +17,10 @@ async function authenticate(req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const [rows] = await pool.query(
-      'SELECT id, role, is_active FROM users WHERE id = ? LIMIT 1',
+      `SELECT id, employee_code, full_name, role, job_title, is_active
+       FROM users
+       WHERE id = ?
+       LIMIT 1`,
       [decoded.id]
     );
 
@@ -37,9 +40,15 @@ async function authenticate(req, res, next) {
       });
     }
 
+    // Always use current database values, not role or identity
+    // information supplied by an older JWT.
     req.user = {
       ...decoded,
-      role: user.role
+      id: user.id,
+      employee_code: user.employee_code,
+      full_name: user.full_name,
+      role: user.role,
+      job_title: user.job_title
     };
 
     next();
@@ -77,4 +86,101 @@ function authorize(...roles) {
   };
 }
 
-module.exports = { authenticate, authorize };
+// Read-only management access.
+// A manager role alone does not grant management access.
+function authorizeManagementRead(req, res, next) {
+  const user = req.user;
+
+  const allowed =
+    user &&
+    (
+      user.role === 'admin' ||
+      user.role === 'management_viewer' ||
+      (
+        user.role === 'manager' &&
+        user.employee_code === 'JUP-MD-001'
+      )
+    );
+
+  if (!allowed) {
+    return res.status(403).json({
+      success: false,
+      message: 'Forbidden. Management viewing access is required.'
+    });
+  }
+
+  next();
+}
+
+
+// Allow guards and authorized management accounts to read announcements.
+function authorizeManagementReadOrGuard(req, res, next) {
+  if (req.user && req.user.role === 'guard') {
+    return next();
+  }
+  return authorizeManagementRead(req, res, next);
+}
+// Management editing is restricted to Administrator
+// and the specific Managing Director account.
+function authorizeManagementEdit(req, res, next) {
+  const user = req.user;
+
+  const allowed =
+    user &&
+    (
+      user.role === 'admin' ||
+      (
+        user.role === 'manager' &&
+        user.employee_code === 'JUP-MD-001'
+      )
+    );
+
+  if (!allowed) {
+    return res.status(403).json({
+      success: false,
+      message: 'Forbidden. Only the Administrator or Managing Director can make this change.'
+    });
+  }
+
+  next();
+}
+
+
+// Guards may view their own guard-specific resources.
+// Authorized management accounts may view management resources.
+function authorizeGuardOrManagementRead(req, res, next) {
+  if (req.user && req.user.role === 'guard') {
+    return next();
+  }
+
+  return authorizeManagementRead(req, res, next);
+}
+
+// Salary Management is exclusively for the actual Managing Director account.
+function authorizeManagingDirector(req, res, next) {
+  const user = req.user;
+
+  const allowed =
+    user &&
+    user.role === 'manager' &&
+    user.employee_code === 'JUP-MD-001';
+
+  if (!allowed) {
+    return res.status(403).json({
+      success: false,
+      message: 'Forbidden. Only the Managing Director can access Salary Management.'
+    });
+  }
+
+  next();
+}
+
+module.exports = {
+  authorizeManagingDirector,
+  authorizeGuardOrManagementRead,
+  authenticate,
+  authorize,
+  authorizeManagementRead,
+  authorizeManagementReadOrGuard,
+  authorizeManagementEdit
+};

@@ -1,6 +1,6 @@
 const express = require('express');
 const pool = require('../config/db');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, authorizeManagementRead, authorizeManagementEdit, authorizeGuardOrManagementRead } = require('../middleware/auth');
 const { publishShiftChange } = require('../services/realtime');
 
 const router = express.Router();
@@ -75,7 +75,7 @@ function buildCycleShifts(cycleStartDate, guardId, siteId) {
 }
 
 // POST generate shifts for a guard (one or more cycles)
-router.post('/generate', authenticate, authorize('admin', 'manager'), async (req, res) => {
+router.post('/generate', authenticate, authorizeManagementEdit, async (req, res) => {
   let connection;
   let transactionStarted = false;
 
@@ -299,7 +299,7 @@ router.post('/generate', authenticate, authorize('admin', 'manager'), async (req
 });
 
 // POST manually assign one Day or Night shift
-router.post('/manual', authenticate, authorize('admin', 'manager'), async (req, res) => {
+router.post('/manual', authenticate, authorizeManagementEdit, async (req, res) => {
   let connection;
   let transactionStarted = false;
 
@@ -464,7 +464,7 @@ router.post('/manual', authenticate, authorize('admin', 'manager'), async (req, 
   }
 });
 // GET shifts for a guard (or all for managers)
-router.get('/', authenticate, async (req, res) => {
+router.get('/', authenticate, authorizeGuardOrManagementRead, async (req, res) => {
   try {
     const { guard_id, from, to } = req.query;
     let sql = `
@@ -521,7 +521,7 @@ router.get('/today', authenticate, async (req, res) => {
 router.put(
   '/:id/site',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       const shiftId = Number(req.params.id);
@@ -590,7 +590,7 @@ router.put(
 
 
 // PUT change an existing scheduled shift between Day and Night
-router.put('/:id/type', authenticate, authorize('admin', 'manager'), async (req, res) => {
+router.put('/:id/type', authenticate, authorizeManagementEdit, async (req, res) => {
   let connection;
   let transactionStarted = false;
 
@@ -746,7 +746,7 @@ router.put('/:id/type', authenticate, authorize('admin', 'manager'), async (req,
 });
 
 // PUT edit the date and times of one scheduled Off shift only
-router.put('/:id/off-time', authenticate, authorize('admin', 'manager'), async (req, res) => {
+router.put('/:id/off-time', authenticate, authorizeManagementEdit, async (req, res) => {
   let connection;
   let transactionStarted = false;
 
@@ -934,7 +934,7 @@ router.put('/:id/off-time', authenticate, authorize('admin', 'manager'), async (
   }
 });
 // DELETE remove one scheduled shift without attendance history
-router.delete('/:id', authenticate, authorize('admin', 'manager'), async (req, res) => {
+router.delete('/:id', authenticate, authorizeManagementEdit, async (req, res) => {
   let connection;
   let transactionStarted = false;
 
@@ -1041,7 +1041,7 @@ router.delete('/:id', authenticate, authorize('admin', 'manager'), async (req, r
 router.get(
   '/coverage',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementRead,
   async (req, res) => {
     try {
       const { date } = req.query;
@@ -1121,7 +1121,7 @@ router.get(
 router.get(
   '/missing',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementRead,
   async (req, res) => {
     try {
       const date = req.query.date;

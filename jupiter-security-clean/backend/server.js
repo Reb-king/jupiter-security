@@ -17,6 +17,7 @@ const attendanceRoutes = require('./routes/attendance');
 const locationRoutes  = require('./routes/locations');
 const incidentRoutes = require('./routes/incidents');
 const announcementRoutes = require('./routes/announcements');
+const salaryRoutes = require('./routes/salary');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -43,6 +44,7 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/locations', locationRoutes);
 app.use('/api/incidents', incidentRoutes);
 app.use('/api/announcements', announcementRoutes);
+app.use('/api/salary', salaryRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

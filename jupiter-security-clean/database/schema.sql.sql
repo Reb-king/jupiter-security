@@ -10,7 +10,7 @@ CREATE DATABASE IF NOT EXISTS jupiter_security
 USE jupiter_security;
 
 -- ------------------------------------------------------------
--- USERS (Admin / Manager / Security Guards)
+-- USERS (Administrator / Managing Director / Management Viewers / Guards)
 -- ------------------------------------------------------------
 CREATE TABLE users (
   id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -19,7 +19,8 @@ CREATE TABLE users (
   phone           VARCHAR(20),                            -- Namibia format e.g. +26481...
   email           VARCHAR(120) UNIQUE,
   password_hash   VARCHAR(255) NOT NULL,
-  role            ENUM('admin', 'manager', 'guard') NOT NULL DEFAULT 'guard',
+  role            ENUM('admin', 'manager', 'guard', 'management_viewer') NOT NULL DEFAULT 'guard',
+  job_title       VARCHAR(100) NULL,
   hourly_rate     DECIMAL(10,2) NOT NULL DEFAULT 0.00,   -- NAD per hour (can differ per guard)
   is_active       TINYINT(1)   NOT NULL DEFAULT 1,
   created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,

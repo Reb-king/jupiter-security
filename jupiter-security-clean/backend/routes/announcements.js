@@ -1,7 +1,7 @@
 const express = require('express');
 
 const pool = require('../config/db');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, authorizeManagementRead, authorizeManagementReadOrGuard, authorizeManagementEdit } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -37,10 +37,7 @@ function toUtcDateTime(value) {
 }
 
 // ALL AUTHENTICATED ROLES: VIEW CURRENT ANNOUNCEMENTS
-router.get(
-  '/',
-  authenticate,
-  authorize('admin', 'manager', 'guard'),
+router.get('/', authenticate, authorizeManagementReadOrGuard,
   async (req, res) => {
     try {
       const [rows] = await pool.query(`
@@ -83,7 +80,7 @@ router.get(
 router.post(
   '/',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementEdit,
   async (req, res) => {
     try {
       const title = getText(req.body.title);
@@ -156,11 +153,11 @@ router.post(
   }
 );
 
-// ADMIN/MANAGER: VIEW WHICH GUARDS HAVE READ AN ANNOUNCEMENT
+// MANAGEMENT READ ACCESS: VIEW WHICH GUARDS HAVE READ AN ANNOUNCEMENT
 router.get(
   '/:id/readers',
   authenticate,
-  authorize('admin', 'manager'),
+  authorizeManagementRead,
   async (req, res) => {
     try {
       const announcementId = Number(req.params.id);
@@ -229,7 +226,7 @@ router.get(
 router.post(
   '/:id/read',
   authenticate,
-  authorize('admin', 'manager', 'guard'),
+  authorize('admin', 'manager', 'management_viewer', 'guard'),
   async (req, res) => {
     try {
       const announcementId = Number(req.params.id);

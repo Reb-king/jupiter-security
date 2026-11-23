@@ -1,6 +1,6 @@
 const express = require('express');
 const pool = require('../config/db');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, authorizeManagementRead, authorizeManagementEdit } = require('../middleware/auth');
 const realtime = require('../services/realtime');
 
 const router = express.Router();
@@ -29,7 +29,28 @@ router.post('/clock-in', authenticate, async (req, res) => {
 
   try {
     const guardId = req.user.id;
-    const { latitude, longitude, notes } = req.body;
+    const { latitude, longitude, accuracy_m, notes } = req.body;
+
+    const gpsLat = Number(latitude);
+    const gpsLng = Number(longitude);
+    const gpsAccuracy = accuracy_m == null ? null : Number(accuracy_m);
+
+    const gpsReliable =
+      latitude != null &&
+      longitude != null &&
+      Number.isFinite(gpsLat) &&
+      Number.isFinite(gpsLng) &&
+      gpsLat >= -90 &&
+      gpsLat <= 90 &&
+      gpsLng >= -180 &&
+      gpsLng <= 180 &&
+      gpsAccuracy !== null &&
+      Number.isFinite(gpsAccuracy) &&
+      gpsAccuracy >= 0 &&
+      gpsAccuracy <= 100;
+
+    const savedLatitude = gpsReliable ? gpsLat : null;
+    const savedLongitude = gpsReliable ? gpsLng : null;
 
     connection = await pool.getConnection();
     await connection.beginTransaction();
@@ -107,14 +128,13 @@ router.post('/clock-in', authenticate, async (req, res) => {
     let withinGeofence = null;
 
     if (
-      latitude != null &&
-      longitude != null &&
+      gpsReliable &&
       site.site_lat != null &&
       site.site_lng != null
     ) {
       const dist = distanceMetres(
-        latitude,
-        longitude,
+        savedLatitude,
+        savedLongitude,
         site.site_lat,
         site.site_lng
       );
@@ -132,24 +152,25 @@ router.post('/clock-in', authenticate, async (req, res) => {
         guardId,
         site.site_id,
         scheduledShiftId,
-        latitude ?? null,
-        longitude ?? null,
+        savedLatitude,
+        savedLongitude,
         withinGeofence,
         notes || null
       ]
     );
 
-    // Update live location when coordinates are available.
-    if (latitude != null && longitude != null) {
+    // Update live location only when GPS accuracy is 100m or better.
+    if (gpsReliable) {
       await connection.query(
         `INSERT INTO guard_locations
-         (guard_id, latitude, longitude, recorded_at)
-         VALUES (?, ?, ?, NOW())
+         (guard_id, latitude, longitude, accuracy_m, recorded_at)
+         VALUES (?, ?, ?, ?, NOW())
          ON DUPLICATE KEY UPDATE
          latitude = VALUES(latitude),
          longitude = VALUES(longitude),
+         accuracy_m = VALUES(accuracy_m),
          recorded_at = NOW()`,
-        [guardId, latitude, longitude]
+        [guardId, savedLatitude, savedLongitude, gpsAccuracy]
       );
     }
 
@@ -197,7 +218,28 @@ router.post('/clock-in', authenticate, async (req, res) => {
 router.post('/clock-out', authenticate, async (req, res) => {
   try {
     const guardId = req.user.id;
-    const { latitude, longitude, notes } = req.body;
+    const { latitude, longitude, accuracy_m, notes } = req.body;
+
+    const gpsLat = Number(latitude);
+    const gpsLng = Number(longitude);
+    const gpsAccuracy = accuracy_m == null ? null : Number(accuracy_m);
+
+    const gpsReliable =
+      latitude != null &&
+      longitude != null &&
+      Number.isFinite(gpsLat) &&
+      Number.isFinite(gpsLng) &&
+      gpsLat >= -90 &&
+      gpsLat <= 90 &&
+      gpsLng >= -180 &&
+      gpsLng <= 180 &&
+      gpsAccuracy !== null &&
+      Number.isFinite(gpsAccuracy) &&
+      gpsAccuracy >= 0 &&
+      gpsAccuracy <= 100;
+
+    const savedLatitude = gpsReliable ? gpsLat : null;
+    const savedLongitude = gpsReliable ? gpsLng : null;
 
     const [open] = await pool.query(
       `SELECT a.*, s.latitude AS site_lat, s.longitude AS site_lng, s.geo_radius_m
@@ -215,8 +257,18 @@ router.post('/clock-out', authenticate, async (req, res) => {
     const record = open[0];
     let withinGeofence = null;
 
-    if (latitude && longitude && record.site_lat && record.site_lng) {
-      const dist = distanceMetres(latitude, longitude, record.site_lat, record.site_lng);
+    if (
+      gpsReliable &&
+      record.site_lat != null &&
+      record.site_lng != null
+    ) {
+      const dist = distanceMetres(
+        savedLatitude,
+        savedLongitude,
+        record.site_lat,
+        record.site_lng
+      );
+
       withinGeofence = dist <= (record.geo_radius_m || 150) ? 1 : 0;
     }
 
@@ -244,7 +296,7 @@ const hoursWorked = Math.round(
          hours_worked = ?,
          notes = CONCAT(IFNULL(notes,''), IFNULL(?, ''))
        WHERE id = ?`,
-      [latitude || null, longitude || null, withinGeofence, hoursWorked, notes ? ' | ' + notes : null, record.id]
+      [savedLatitude, savedLongitude, withinGeofence, hoursWorked, notes ? ' | ' + notes : null, record.id]
     );
 
    // Mark scheduled shift as completed only after its scheduled end time
@@ -397,7 +449,7 @@ router.get('/my', authenticate, async (req, res) => {
   }
 });
 
-router.post('/clear', authenticate, authorize('admin', 'manager'), async (req, res) => {
+router.post('/clear', authenticate, authorizeManagementEdit, async (req, res) => {
   let connection;
   let transactionStarted = false;
 
@@ -579,7 +631,7 @@ router.post('/clear', authenticate, authorize('admin', 'manager'), async (req, r
     }
   }
 });
-router.get('/', authenticate, authorize('admin', 'manager'), async (req, res) => {
+router.get('/', authenticate, authorizeManagementRead, async (req, res) => {
   try {
     const { from, to, guard_id } = req.query;
 
